@@ -1,7 +1,8 @@
 import type { Metadata } from "next"
-import { Building2 } from "lucide-react"
 
 import { LoginForm } from "@/app/login/login-form"
+import { AppLogo } from "@/components/brand/app-logo"
+import { APP_NAME } from "@/lib/brand"
 
 export const metadata: Metadata = {
   title: "Sign in",
@@ -12,11 +13,9 @@ export default function LoginPage() {
     <main className="flex min-h-svh items-center justify-center bg-muted/30 p-6">
       <div className="w-full max-w-md rounded-2xl border bg-card p-6 shadow-xs">
         <div className="mb-6 flex items-center gap-3">
-          <div className="flex size-10 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-            <Building2 className="size-5" />
-          </div>
+          <AppLogo size={40} className="size-10 shrink-0" priority />
           <div>
-            <h1 className="text-lg font-semibold tracking-tight">LedgerOps</h1>
+            <h1 className="text-lg font-semibold tracking-tight">{APP_NAME}</h1>
             <p className="text-sm text-muted-foreground">
               Sign in to load invoices, bills, and audit logs.
             </p>

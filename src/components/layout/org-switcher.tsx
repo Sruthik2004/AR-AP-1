@@ -1,7 +1,9 @@
 "use client"
 
 import * as React from "react"
-import { Building2, Check, ChevronsUpDown, Plus } from "lucide-react"
+import { Check, ChevronsUpDown, Plus } from "lucide-react"
+
+import { AppLogo } from "@/components/brand/app-logo"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -14,7 +16,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 
 const organizations = [
-  { id: "acme", name: "Acme Corporation", plan: "Enterprise" },
+  { id: "sbc", name: "SBC LLP", plan: "Enterprise" },
   { id: "northwind", name: "Northwind Trading", plan: "Business" },
   { id: "contoso", name: "Contoso Holdings", plan: "Enterprise" },
 ]
@@ -30,9 +32,7 @@ export function OrgSwitcher() {
           className="h-9 max-w-[220px] justify-between gap-2 px-2.5 font-normal"
         >
           <span className="flex min-w-0 items-center gap-2">
-            <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted">
-              <Building2 className="size-3.5" />
-            </span>
+            <AppLogo size={24} className="size-6 shrink-0" />
             <span className="truncate text-sm font-medium">{activeOrg.name}</span>
           </span>
           <ChevronsUpDown className="size-3.5 shrink-0 opacity-50" />

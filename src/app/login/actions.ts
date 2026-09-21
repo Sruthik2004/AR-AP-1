@@ -3,50 +3,13 @@
 import { revalidatePath } from "next/cache"
 import { redirect } from "next/navigation"
 
+import { ensureOrgProfile } from "@/lib/auth/org"
 import { createClient } from "@/lib/supabase/server"
 import { isSupabaseConfigured } from "@/lib/supabase/env"
 
 export type AuthFormState =
   | { success: true }
   | { success: false; error: string }
-
-async function ensureOrgProfile(
-  supabase: Awaited<ReturnType<typeof createClient>>,
-  userId: string,
-  email: string
-) {
-  const { data: existing } = await supabase
-    .from("users")
-    .select("id")
-    .eq("id", userId)
-    .maybeSingle()
-
-  if (existing) return
-
-  const { data: org, error: orgError } = await supabase
-    .from("organizations")
-    .insert({
-      name: "Acme Corporation",
-      base_currency: "INR",
-    })
-    .select("id")
-    .single()
-
-  if (orgError || !org) {
-    throw new Error(orgError?.message ?? "Failed to create organization.")
-  }
-
-  const { error: profileError } = await supabase.from("users").insert({
-    id: userId,
-    org_id: org.id,
-    email,
-    role: "admin",
-  })
-
-  if (profileError) {
-    throw new Error(profileError.message)
-  }
-}
 
 export async function signInWithPassword(
   _prev: AuthFormState | null,

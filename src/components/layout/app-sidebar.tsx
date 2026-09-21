@@ -2,8 +2,9 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Building2 } from "lucide-react"
 
+import { AppLogo } from "@/components/brand/app-logo"
+import { APP_NAME, APP_TAGLINE } from "@/lib/brand"
 import { mainNavItems } from "@/lib/navigation"
 import {
   Sidebar,
@@ -27,17 +28,15 @@ export function AppSidebar() {
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton size="lg" asChild tooltip="AR & AP Platform">
+            <SidebarMenuButton size="lg" asChild tooltip={APP_NAME}>
               <Link href="/dashboard">
-                <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
-                  <Building2 className="size-4" />
-                </div>
+                <AppLogo size={32} className="size-8 shrink-0" />
                 <div className="grid flex-1 text-left text-sm leading-tight">
                   <span className="truncate font-semibold tracking-tight">
-                    LedgerOps
+                    {APP_NAME}
                   </span>
                   <span className="truncate text-xs text-muted-foreground">
-                    AR / AP Platform
+                    {APP_TAGLINE}
                   </span>
                 </div>
               </Link>

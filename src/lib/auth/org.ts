@@ -1,3 +1,5 @@
+import { randomUUID } from "crypto"
+
 import { isSupabaseConfigured } from "@/lib/supabase/env"
 import { createClient } from "@/lib/supabase/server"
 
@@ -22,8 +24,52 @@ type SessionClientResult =
       ok: true
       supabase: Awaited<ReturnType<typeof createClient>>
       userId: string
+      email: string
     }
   | { ok: false; error: string }
+
+function claimString(value: unknown) {
+  return typeof value === "string" ? value : ""
+}
+
+export async function ensureOrgProfile(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+  email: string
+) {
+  const { data: existing } = await supabase
+    .from("users")
+    .select("id")
+    .eq("id", userId)
+    .maybeSingle()
+
+  if (existing) return
+
+  // Generate the org id in-app. Insert+select on organizations fails under RLS
+  // because SELECT is scoped to private.user_org_id(), which is null until the
+  // users row exists.
+  const orgId = randomUUID()
+  const { error: orgError } = await supabase.from("organizations").insert({
+    id: orgId,
+    name: "SBC LLP",
+    base_currency: "INR",
+  })
+
+  if (orgError) {
+    throw new Error(orgError.message)
+  }
+
+  const { error: profileError } = await supabase.from("users").insert({
+    id: userId,
+    org_id: orgId,
+    email,
+    role: "admin",
+  })
+
+  if (profileError) {
+    throw new Error(profileError.message)
+  }
+}
 
 export async function getSessionClient(): Promise<SessionClientResult> {
   if (!isSupabaseConfigured()) {
@@ -38,25 +84,44 @@ export async function getSessionClient(): Promise<SessionClientResult> {
   const { data: claimsData, error: claimsError } =
     await supabase.auth.getClaims()
 
-  const userId = claimsData?.claims?.sub
+  const userId = claimString(claimsData?.claims?.sub)
   if (claimsError || !userId) {
     return { ok: false, error: SIGN_IN_REQUIRED }
   }
 
-  return { ok: true, supabase, userId }
+  return {
+    ok: true,
+    supabase,
+    userId,
+    email: claimString(claimsData?.claims?.email),
+  }
 }
 
 export async function requireOrgContext(): Promise<OrgContextResult> {
   const session = await getSessionClient()
   if (!session.ok) return session
 
-  const { supabase, userId } = session
+  const { supabase, userId, email } = session
 
-  const { data: profile, error: profileError } = await supabase
-    .from("users")
-    .select("org_id, role")
-    .eq("id", userId)
-    .maybeSingle()
+  const loadProfile = () =>
+    supabase.from("users").select("org_id, role").eq("id", userId).maybeSingle()
+
+  let { data: profile, error: profileError } = await loadProfile()
+
+  if (!profile?.org_id && email) {
+    try {
+      await ensureOrgProfile(supabase, userId, email)
+      ;({ data: profile, error: profileError } = await loadProfile())
+    } catch (err) {
+      return {
+        ok: false,
+        error:
+          err instanceof Error
+            ? err.message
+            : "Could not create an organization membership for this user.",
+      }
+    }
+  }
 
   if (profileError || !profile?.org_id) {
     return {

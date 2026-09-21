@@ -2,8 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 
-import { isSupabaseConfigured } from "@/lib/supabase/env"
-import { createClient } from "@/lib/supabase/server"
+import { requireOrgContext } from "@/lib/auth/org"
 import type { ContactType, CreateContactInput } from "@/types/contacts"
 
 export type CreateContactResult =
@@ -53,47 +52,20 @@ function parseCreateContactInput(
 export async function createContact(
   formData: FormData
 ): Promise<CreateContactResult> {
-  if (!isSupabaseConfigured()) {
-    return {
-      success: false,
-      error:
-        "Supabase is not configured. Add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY to .env.local.",
-    }
-  }
-
   const parsed = parseCreateContactInput(formData)
   if ("error" in parsed) {
     return { success: false, error: parsed.error }
   }
 
-  const supabase = await createClient()
-  const { data: claimsData, error: claimsError } =
-    await supabase.auth.getClaims()
-
-  const userId = claimsData?.claims?.sub
-  if (claimsError || !userId) {
-    return {
-      success: false,
-      error: "You must be signed in to create a contact.",
-    }
+  const auth = await requireOrgContext()
+  if (!auth.ok) {
+    return { success: false, error: auth.error }
   }
 
-  const { data: profile, error: profileError } = await supabase
-    .from("users")
-    .select("org_id")
-    .eq("id", userId)
-    .maybeSingle()
-
-  if (profileError || !profile?.org_id) {
-    return {
-      success: false,
-      error:
-        "No organization profile found for your user. Create an organization membership first.",
-    }
-  }
+  const { supabase, userId, orgId } = auth.ctx
 
   const payload = {
-    org_id: profile.org_id as string,
+    org_id: orgId,
     name: parsed.name,
     type: parsed.type,
     email: parsed.email,
@@ -116,7 +88,7 @@ export async function createContact(
   }
 
   const { error: auditError } = await supabase.from("audit_logs").insert({
-    org_id: profile.org_id,
+    org_id: orgId,
     user_id: userId,
     action: "contact.create",
     entity: "contacts",

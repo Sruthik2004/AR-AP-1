@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google"
 
 import { ThemeProvider } from "@/components/providers/theme-provider"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import { APP_NAME, APP_TAGLINE } from "@/lib/brand"
 
 import "./globals.css"
 
@@ -18,11 +19,12 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "LedgerOps — AR & AP Platform",
-    template: "%s · LedgerOps",
+    default: `${APP_NAME} — ${APP_TAGLINE}`,
+    template: `%s · ${APP_NAME}`,
   },
   description:
-    "Enterprise accounts receivable and accounts payable operations platform.",
+    "SBC LLP accounts receivable and accounts payable operations platform.",
+  applicationName: APP_NAME,
 }
 
 export default function RootLayout({

@@ -6,7 +6,14 @@ import { requireOrgContext } from "@/lib/auth/org"
 import type { ContactType, CreateContactInput } from "@/types/contacts"
 
 export type CreateContactResult =
-  | { success: true; id: string }
+  | {
+      success: true
+      id: string
+      name: string
+      email: string
+      currency: string
+      type: ContactType
+    }
   | { success: false; error: string }
 
 function normalizeCurrency(value: string) {
@@ -107,6 +114,17 @@ export async function createContact(
 
   revalidatePath("/dashboard/contacts")
   revalidatePath("/contacts")
+  revalidatePath("/dashboard/ap")
+  revalidatePath("/dashboard/ap/new")
+  revalidatePath("/dashboard/ar")
+  revalidatePath("/dashboard/ar/new")
 
-  return { success: true, id: contact.id }
+  return {
+    success: true,
+    id: contact.id,
+    name: parsed.name,
+    email: parsed.email,
+    currency: parsed.currency,
+    type: parsed.type,
+  }
 }

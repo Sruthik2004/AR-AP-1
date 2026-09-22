@@ -14,7 +14,7 @@ export default async function NewBillPage() {
   return (
     <PageShell
       title="Create bill"
-      description="Capture vendor invoices with uploads, line items, and approval routing."
+      description="Upload a vendor bill to auto-fill vendor, due date, items, and total. Review before submitting."
     >
       <BillCreateForm vendors={vendors} vendorsError={error} />
     </PageShell>

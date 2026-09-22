@@ -49,8 +49,10 @@ function parseLineItems(raw: unknown): InvoiceLineInput[] | { error: string } {
     if (!description) {
       return { error: `Line item ${index + 1} needs a description.` }
     }
-    if (!Number.isFinite(quantity) || quantity <= 0) {
-      return { error: `Line item ${index + 1} needs a positive quantity.` }
+    if (!Number.isInteger(quantity) || quantity < 1) {
+      return {
+        error: `Line item ${index + 1} quantity must be a whole number of 1 or more.`,
+      }
     }
     if (!Number.isFinite(unit_price) || unit_price < 0) {
       return { error: `Line item ${index + 1} needs a valid unit rate.` }
@@ -61,7 +63,7 @@ function parseLineItems(raw: unknown): InvoiceLineInput[] | { error: string } {
 
     items.push({
       description,
-      quantity: roundMoney(quantity),
+      quantity,
       unit_price: roundMoney(unit_price),
       tax_rate: roundMoney(tax_rate),
       line_total: calcLineTotal(quantity, unit_price, tax_rate),

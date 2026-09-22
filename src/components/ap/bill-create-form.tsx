@@ -6,6 +6,8 @@ import { useRouter } from "next/navigation"
 import { Loader2, Plus, Trash2, Upload } from "lucide-react"
 
 import { createBill } from "@/app/dashboard/ap/actions"
+import { extractBillFromUpload } from "@/app/dashboard/ap/extract"
+import { NewContactSheet } from "@/components/contacts/new-contact-sheet"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -84,11 +86,20 @@ export function BillCreateForm({
   const router = useRouter()
   const [pending, setPending] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
+  const [vendorOptions, setVendorOptions] = React.useState(vendors)
   const [vendorId, setVendorId] = React.useState("")
   const [billNumber, setBillNumber] = React.useState(suggestBillNumber)
   const [dueDate, setDueDate] = React.useState(() => addDaysInputValue(30))
   const [attachment, setAttachment] = React.useState<File | null>(null)
+  const [extracting, setExtracting] = React.useState(false)
+  const [extractNote, setExtractNote] = React.useState<string | null>(null)
+  const [extractFailed, setExtractFailed] = React.useState(false)
+  const extractGen = React.useRef(0)
   const [lines, setLines] = React.useState<LineItemDraft[]>([createEmptyLine()])
+
+  React.useEffect(() => {
+    setVendorOptions(vendors)
+  }, [vendors])
 
   const computedLines = lines.map((line) => {
     const quantity = Number(line.quantity) || 0
@@ -118,6 +129,7 @@ export function BillCreateForm({
     computedLines.reduce((sum, line) => sum + line.lineTotal, 0)
   )
   const requiresApproval = grandTotal > BILL_APPROVAL_THRESHOLD
+  const busy = pending || extracting
 
   function updateLine(key: string, patch: Partial<LineItemDraft>) {
     setLines((prev) =>
@@ -129,6 +141,63 @@ export function BillCreateForm({
     setLines((prev) =>
       prev.length === 1 ? prev : prev.filter((line) => line.key !== key)
     )
+  }
+
+  async function onAttachmentChange(file: File | null) {
+    const gen = ++extractGen.current
+    setAttachment(file)
+    setExtractNote(null)
+    setExtractFailed(false)
+    if (!file) return
+
+    setExtracting(true)
+    try {
+      const formData = new FormData()
+      formData.set("attachment", file)
+      const result = await extractBillFromUpload(formData)
+      if (gen !== extractGen.current) return
+
+      if (!result.success) {
+        setExtractFailed(true)
+        setExtractNote(result.error)
+        return
+      }
+
+      if (result.newVendor) {
+        const createdVendor = result.newVendor
+        setVendorOptions((prev) => {
+          if (prev.some((vendor) => vendor.id === createdVendor.id)) {
+            return prev
+          }
+          return [...prev, createdVendor].sort((a, b) =>
+            a.name.localeCompare(b.name)
+          )
+        })
+      }
+      if (result.vendorId) setVendorId(result.vendorId)
+      if (result.billNumber) setBillNumber(result.billNumber)
+      if (result.dueDate) setDueDate(result.dueDate)
+      if (result.items.length > 0) {
+        setLines(
+          result.items.map((item) => ({
+            key: crypto.randomUUID(),
+            description: item.description,
+            quantity: item.quantity,
+            unit_price: item.unit_price,
+            tax_rate: item.tax_rate,
+          }))
+        )
+      }
+      setExtractNote(result.message)
+    } catch {
+      if (gen !== extractGen.current) return
+      setExtractFailed(true)
+      setExtractNote(
+        "Could not read this bill automatically. The file is still attached — fill vendor, dates, and items by hand."
+      )
+    } finally {
+      if (gen === extractGen.current) setExtracting(false)
+    }
   }
 
   async function submit(saveAsDraft: boolean) {
@@ -189,19 +258,49 @@ export function BillCreateForm({
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <div className="space-y-2 md:col-span-2 xl:col-span-1">
-          <Label htmlFor="vendor_id">Vendor</Label>
+          <div className="flex items-center justify-between gap-2">
+            <Label htmlFor="vendor_id">Vendor</Label>
+            <NewContactSheet
+              defaultType="vendor"
+              lockType
+              onCreated={(contact) => {
+                if (contact.type !== "vendor") return
+                setVendorOptions((prev) => {
+                  if (prev.some((vendor) => vendor.id === contact.id)) {
+                    return prev
+                  }
+                  return [
+                    ...prev,
+                    {
+                      id: contact.id,
+                      name: contact.name,
+                      email: contact.email,
+                      currency: contact.currency,
+                    },
+                  ].sort((a, b) => a.name.localeCompare(b.name))
+                })
+                setVendorId(contact.id)
+              }}
+              trigger={
+                <Button type="button" variant="ghost" size="sm" className="h-7 px-2">
+                  <Plus />
+                  Add vendor
+                </Button>
+              }
+            />
+          </div>
           <Select
             value={vendorId}
             onValueChange={(value) => {
               if (value) setVendorId(value)
             }}
-            disabled={pending || vendors.length === 0}
+            disabled={busy || vendorOptions.length === 0}
           >
             <SelectTrigger id="vendor_id" className="w-full">
               <SelectValue placeholder="Select vendor" />
             </SelectTrigger>
             <SelectContent>
-              {vendors.map((vendor) => (
+              {vendorOptions.map((vendor) => (
                 <SelectItem key={vendor.id} value={vendor.id}>
                   {vendor.name}
                   {vendor.email ? ` · ${vendor.email}` : ""}
@@ -209,18 +308,23 @@ export function BillCreateForm({
               ))}
             </SelectContent>
           </Select>
-          {vendors.length === 0 ? (
+          {vendorOptions.length === 0 ? (
             <p className="text-xs text-muted-foreground">
-              No vendors found.{" "}
+              No vendors yet. Click <span className="font-medium">Add vendor</span>{" "}
+              and enter the vendor name, or add one under{" "}
               <Link
                 href="/dashboard/contacts"
                 className="underline underline-offset-2"
               >
-                Add a vendor contact
-              </Link>{" "}
-              first.
+                Contacts
+              </Link>
+              .
             </p>
-          ) : null}
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Pick an existing vendor, or add a new name with Add vendor.
+            </p>
+          )}
         </div>
 
         <div className="space-y-2">
@@ -230,7 +334,7 @@ export function BillCreateForm({
             value={billNumber}
             onChange={(event) => setBillNumber(event.target.value)}
             required
-            disabled={pending}
+            disabled={busy}
           />
         </div>
 
@@ -242,7 +346,7 @@ export function BillCreateForm({
             value={dueDate}
             onChange={(event) => setDueDate(event.target.value)}
             required
-            disabled={pending}
+            disabled={busy}
           />
         </div>
 
@@ -253,17 +357,38 @@ export function BillCreateForm({
               id="attachment"
               type="file"
               accept=".pdf,.png,.jpg,.jpeg,.webp,.doc,.docx,application/pdf,image/*"
-              disabled={pending}
+              disabled={busy}
               onChange={(event) =>
-                setAttachment(event.target.files?.[0] ?? null)
+                void onAttachmentChange(event.target.files?.[0] ?? null)
               }
             />
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <Upload className="size-3.5" />
-              PDF, image, or Word · max 10MB
+              PDF or photo auto-fills vendor, due date, items, and total · max 10MB
             </div>
           </div>
-          {attachment ? (
+          {extracting ? (
+            <p className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin" />
+              Reading vendor, due date, items, and total…
+            </p>
+          ) : extractNote ? (
+            <p
+              className={
+                extractFailed
+                  ? "text-sm text-amber-800 dark:text-amber-200"
+                  : "text-sm text-muted-foreground"
+              }
+            >
+              {extractNote}
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Upload a PDF or photo of the bill. Review the filled fields before
+              submitting. Word files attach only.
+            </p>
+          )}
+          {attachment && !extracting ? (
             <p className="text-xs text-muted-foreground">
               Selected: {attachment.name}
             </p>
@@ -283,7 +408,7 @@ export function BillCreateForm({
             type="button"
             variant="outline"
             size="sm"
-            disabled={pending}
+            disabled={busy}
             onClick={() => setLines((prev) => [...prev, createEmptyLine()])}
           >
             <Plus />
@@ -316,7 +441,7 @@ export function BillCreateForm({
                       }
                       placeholder="Goods / services"
                       required
-                      disabled={pending}
+                      disabled={busy}
                     />
                   </TableCell>
                   <TableCell>
@@ -329,7 +454,7 @@ export function BillCreateForm({
                         updateLine(line.key, { quantity: event.target.value })
                       }
                       required
-                      disabled={pending}
+                      disabled={busy}
                     />
                   </TableCell>
                   <TableCell>
@@ -344,7 +469,7 @@ export function BillCreateForm({
                         })
                       }
                       required
-                      disabled={pending}
+                      disabled={busy}
                     />
                   </TableCell>
                   <TableCell>
@@ -353,7 +478,7 @@ export function BillCreateForm({
                       onValueChange={(value) => {
                         if (value) updateLine(line.key, { tax_rate: value })
                       }}
-                      disabled={pending}
+                      disabled={busy}
                     >
                       <SelectTrigger className="w-full">
                         <SelectValue />
@@ -375,7 +500,7 @@ export function BillCreateForm({
                       type="button"
                       variant="ghost"
                       size="icon-sm"
-                      disabled={pending || lines.length === 1}
+                      disabled={busy || lines.length === 1}
                       onClick={() => removeLine(line.key)}
                       aria-label="Remove line"
                     >
@@ -417,19 +542,19 @@ export function BillCreateForm({
       ) : null}
 
       <div className="flex flex-wrap items-center justify-end gap-2">
-        <Button type="button" variant="outline" asChild disabled={pending}>
+        <Button type="button" variant="outline" asChild disabled={busy}>
           <Link href="/dashboard/ap">Cancel</Link>
         </Button>
         <Button
           type="button"
           variant="secondary"
-          disabled={pending || vendors.length === 0}
+          disabled={busy || vendorOptions.length === 0}
           onClick={() => void submit(true)}
         >
           {pending ? <Loader2 className="animate-spin" /> : null}
           Save draft
         </Button>
-        <Button type="submit" disabled={pending || vendors.length === 0}>
+        <Button type="submit" disabled={busy || vendorOptions.length === 0}>
           {pending ? (
             <>
               <Loader2 className="animate-spin" />

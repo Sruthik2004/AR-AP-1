@@ -28,17 +28,37 @@ import { DEFAULT_CURRENCY } from "@/lib/currency"
 
 const CURRENCY_OPTIONS = ["INR", "USD", "EUR", "GBP", "AED"] as const
 
-type NewContactSheetProps = {
-  trigger?: React.ReactNode
+export type CreatedContact = {
+  id: string
+  name: string
+  email: string
+  currency: string
+  type: "customer" | "vendor"
 }
 
-export function NewContactSheet({ trigger }: NewContactSheetProps) {
+type NewContactSheetProps = {
+  trigger?: React.ReactNode
+  defaultType?: "customer" | "vendor"
+  lockType?: boolean
+  onCreated?: (contact: CreatedContact) => void
+}
+
+export function NewContactSheet({
+  trigger,
+  defaultType = "customer",
+  lockType = false,
+  onCreated,
+}: NewContactSheetProps) {
   const router = useRouter()
   const [open, setOpen] = React.useState(false)
   const [pending, setPending] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
-  const [type, setType] = React.useState<"customer" | "vendor">("customer")
+  const [type, setType] = React.useState<"customer" | "vendor">(defaultType)
   const [currency, setCurrency] = React.useState<string>(DEFAULT_CURRENCY)
+
+  React.useEffect(() => {
+    if (open) setType(defaultType)
+  }, [open, defaultType])
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -59,9 +79,10 @@ export function NewContactSheet({ trigger }: NewContactSheetProps) {
     }
 
     setOpen(false)
-    setType("customer")
+    setType(defaultType)
     setCurrency(DEFAULT_CURRENCY)
     event.currentTarget.reset()
+    onCreated?.(result)
     router.refresh()
   }
 
@@ -72,9 +93,17 @@ export function NewContactSheet({ trigger }: NewContactSheetProps) {
       </SheetTrigger>
       <SheetContent side="right" className="w-full sm:max-w-md">
         <SheetHeader>
-          <SheetTitle>New Contact</SheetTitle>
+          <SheetTitle>
+            {lockType
+              ? defaultType === "vendor"
+                ? "New vendor"
+                : "New customer"
+              : "New Contact"}
+          </SheetTitle>
           <SheetDescription>
-            Add a customer or vendor to your organization directory.
+            {lockType && defaultType === "vendor"
+              ? "Add a vendor, then they will be selected on this bill."
+              : "Add a customer or vendor to your organization directory."}
           </SheetDescription>
         </SheetHeader>
 
@@ -99,7 +128,7 @@ export function NewContactSheet({ trigger }: NewContactSheetProps) {
                   setType(value)
                 }
               }}
-              disabled={pending}
+              disabled={pending || lockType}
             >
               <SelectTrigger id="type" className="w-full">
                 <SelectValue placeholder="Select type" />

@@ -80,6 +80,12 @@ function suggestInvoiceNumber() {
   return `INV-${y}${m}${d}-${rand}`
 }
 
+function toWholeQuantity(value: string) {
+  const digits = value.match(/^\d+/)?.[0]
+  if (!digits) return ""
+  return String(Number.parseInt(digits, 10))
+}
+
 export function InvoiceCreateForm({
   customers,
   customersError,
@@ -95,7 +101,7 @@ export function InvoiceCreateForm({
   const [lines, setLines] = React.useState<LineItemDraft[]>([createEmptyLine()])
 
   const computedLines = lines.map((line) => {
-    const quantity = Number(line.quantity) || 0
+    const quantity = Number.parseInt(line.quantity, 10) || 0
     const unitPrice = Number(line.unit_price) || 0
     const taxRate = Number(line.tax_rate) || 0
     const subtotal = roundMoney(quantity * unitPrice)
@@ -308,11 +314,14 @@ export function InvoiceCreateForm({
                   <TableCell>
                     <Input
                       type="number"
-                      min={0.0001}
-                      step="0.01"
+                      inputMode="numeric"
+                      min={1}
+                      step={1}
                       value={line.quantity}
                       onChange={(event) =>
-                        updateLine(line.key, { quantity: event.target.value })
+                        updateLine(line.key, {
+                          quantity: toWholeQuantity(event.target.value),
+                        })
                       }
                       required
                       disabled={pending}

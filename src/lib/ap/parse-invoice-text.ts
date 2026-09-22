@@ -145,7 +145,7 @@ function sellerSection(text: string) {
 }
 
 function companyLike(line: string) {
-  return /\b(pvt\.?\s*ltd\.?|private\s+limited|limited|ltd\.?|llp|inc\.?|llc|enterprises|traders|supplies|solutions|services|industries)\b/i.test(
+  return /\b(pvt\.?\s*ltd\.?|private\s+limited|limited|ltd\.?|llp|inc\.?|llc|enterprises|traders|supplies|solutions|industries)\b/i.test(
     line
   )
 }
@@ -220,69 +220,130 @@ function findAnyDate(text: string) {
 }
 
 function documentGst(text: string) {
-  const igst = text.match(/\bigst\b[^%\n]{0,20}(\d{1,2})\s*%/i)
-  if (igst) return nearestGst(Number(igst[1]))
+  const percent =
+    text.match(/igst\s*0?\s*\(?\s*(\d{1,2})\s*%/i) ??
+    text.match(/\b(?:cgst|sgst|utgst)\s*0?\s*\(?\s*(\d{1,2})\s*%/i) ??
+    text.match(/(?<![a-z])gst(?!in)\s*0?\s*\(?\s*(\d{1,2})\s*%/i)
 
-  const gst = text.match(/\bgst\b[^%\n]{0,12}(\d{1,2})\s*%/i)
-  if (gst) return nearestGst(Number(gst[1]))
+  if (percent) return nearestGst(Number(percent[1]))
 
   const cgst = Number(text.match(/\bcgst\b[^%\n]{0,12}(\d{1,2})\s*%/i)?.[1] ?? 0)
   const sgst = Number(text.match(/\bsgst\b[^%\n]{0,12}(\d{1,2})\s*%/i)?.[1] ?? 0)
   if (cgst || sgst) return nearestGst(cgst + sgst)
 
+  if (/without payment of tax|\blut\b|export under/i.test(text)) return 0
+
   return 18
 }
 
-function isJunkLine(line: string) {
-  return /total|subtotal|taxable|gst|cgst|sgst|igst|round\s*off|bank|ifsc|swift|hsn|sac|qty|quantity|rate|amount|particulars|description|page\s+\d/i.test(
+function isYear(value: number) {
+  return Number.isInteger(value) && value >= 1900 && value <= 2100
+}
+
+function isHsn(value: string) {
+  return /^\d{4,8}$/.test(value)
+}
+
+function isSummaryLine(line: string) {
+  return /^(sub\s*total|taxable|igst|cgst|sgst|utgst|gst|round\s*off|grand\s*total|amount\s*payable|total\s*in\s*words|amount\s*in\s*words|total\b)/i.test(
     line
   )
 }
 
-function parseLineItems(text: string, taxRate: number): ParsedInvoiceItem[] {
-  const items: ParsedInvoiceItem[] = []
-  const row =
-    /^(.{3,80}?)\s+(\d+(?:\.\d+)?)\s+([\d,]+\.?\d{0,2})\s+(?:(\d{1,2})\s*%\s+)?([\d,]+\.?\d{0,2})\s*$/gm
+function isJunkDescription(line: string) {
+  return /^(sno|sl\.?\s*no|item|description|hsn|sac|qty|quantity|rate|amount|particulars|page\s+\d)\b/i.test(
+    line
+  )
+}
 
-  for (const match of text.matchAll(row)) {
-    const description = match[1].replace(/\s+/g, " ").trim()
-    if (isJunkLine(description) || description.length < 3) continue
-    const quantity = Math.max(1, Math.round(Number(match[2]) || 1))
-    const unitPrice = parseMoney(match[3])
-    const lineGst = match[4] ? nearestGst(Number(match[4])) : taxRate
-    if (unitPrice == null || unitPrice < 0) continue
-    items.push({
-      description,
-      quantity,
-      unitPrice,
-      taxRate: lineGst,
-    })
+function trailingMoney(line: string) {
+  const match = line.match(/((?:[$₹]|rs\.?|inr)?\s*[\d,]+\.\d{2})\s*$/i)
+  if (!match || match.index == null) return null
+  const amount = parseMoney(match[1])
+  if (amount == null) return null
+  return {
+    amount,
+    rest: line.slice(0, match.index).trim(),
+  }
+}
+
+function parseAmountRow(line: string, taxRate: number): ParsedInvoiceItem | null {
+  const money = trailingMoney(line)
+  if (!money || money.amount <= 0) return null
+
+  let rest = money.rest
+  rest = rest.replace(/\s+\d{1,2}\s*%$/i, "").trim()
+
+  const hsn = rest.match(/\s(\d{4,8})$/)
+  if (hsn) rest = rest.slice(0, -hsn[0].length).trim()
+
+  const qtyRate = rest.match(/\s+(\d+(?:\.\d+)?)\s+([\d,]+\.?\d{0,2})$/)
+  let quantity = 1
+  let unitPrice = money.amount
+  if (qtyRate) {
+    const qty = Number(qtyRate[1])
+    const rate = parseMoney(qtyRate[2])
+    if (
+      rate != null &&
+      !isYear(qty) &&
+      !isHsn(qtyRate[1]) &&
+      !isHsn(qtyRate[2].replace(/,/g, ""))
+    ) {
+      quantity = Math.max(1, Math.round(qty) || 1)
+      unitPrice = rate
+      rest = rest.slice(0, -qtyRate[0].length).trim()
+    }
+  }
+
+  rest = rest.replace(/^\d{1,3}\s+/, "").trim()
+  if (rest.length < 3 || isJunkDescription(rest) || isSummaryLine(rest)) {
+    return null
+  }
+
+  return {
+    description: rest.replace(/\s+/g, " "),
+    quantity,
+    unitPrice,
+    taxRate,
+  }
+}
+
+function parseLineItems(text: string, taxRate: number): ParsedInvoiceItem[] {
+  const lines = text
+    .split(/\n+/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+
+  const headerIndex = lines.findIndex((line) =>
+    /(?:s\.?\s*no|sno|sl\.?\s*no).*(?:item|description|particulars)/i.test(line)
+  )
+  const body = headerIndex >= 0 ? lines.slice(headerIndex + 1) : lines
+  const items: ParsedInvoiceItem[] = []
+
+  for (const line of body) {
+    if (isSummaryLine(line) || /total\s*in\s*words|authorized\s+signature|payment\s+terms/i.test(line)) {
+      if (items.length) break
+      continue
+    }
+    const item = parseAmountRow(line, taxRate)
+    if (item) items.push(item)
   }
 
   if (items.length) return items
 
-  const grandTotal =
-    parseMoney(
-      labeledValue(
-        text,
-        /(?:grand\s*total|invoice\s*total|amount\s*payable|net\s*payable|total\s*amount)[^\d₹]{0,12}((?:₹|rs\.?|inr)?\s*[\d,]+(?:\.\d{1,2})?)/i
-      )
-    ) ??
-    parseMoney(
-      labeledValue(
-        text,
-        /(?:taxable\s*(?:value|amount)|taxable)[^\d₹]{0,12}((?:₹|rs\.?|inr)?\s*[\d,]+(?:\.\d{1,2})?)/i
-      )
+  const grandTotal = parseMoney(
+    labeledValue(
+      text,
+      /(?:grand\s*total|invoice\s*total|amount\s*payable|net\s*payable|(?<![a-z])total(?!\s*in\s*words))[^\d$₹]{0,12}((?:[$₹]|rs\.?|inr)?\s*[\d,]+(?:\.\d{1,2})?)/i
     )
+  )
 
   if (grandTotal && grandTotal > 0) {
-    const preTax =
-      taxRate > 0 ? Math.round((grandTotal / (1 + taxRate / 100)) * 100) / 100 : grandTotal
     return [
       {
         description: "Invoice total",
         quantity: 1,
-        unitPrice: preTax,
+        unitPrice: grandTotal,
         taxRate,
       },
     ]
@@ -300,12 +361,22 @@ export function parseInvoiceText(
   const invoiceDate =
     findLabeledDate(
       cleaned,
-      /(?:invoice\s*date|bill\s*date|dated|date)[:\s]+([0-9A-Za-z/.\- ,]{6,20})/i
+      /(?:invoice\s*date|bill\s*date|dated)[:\s]+([0-9A-Za-z/.\- ,]{6,20})/i
     ) ?? findAnyDate(cleaned)
-  const dueDate = findLabeledDate(
+
+  let dueDate = findLabeledDate(
     cleaned,
     /(?:due\s*date|payment\s*due|pay\s*by)[:\s]+([0-9A-Za-z/.\- ,]{6,20})/i
   )
+  if (
+    !dueDate &&
+    invoiceDate &&
+    /due on receipt|upon receipt of invoice|payment to be made upon receipt/i.test(
+      cleaned
+    )
+  ) {
+    dueDate = invoiceDate
+  }
 
   return {
     vendorName: findVendorName(cleaned, options?.knownVendors ?? []),

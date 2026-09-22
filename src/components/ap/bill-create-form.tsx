@@ -364,13 +364,13 @@ export function BillCreateForm({
             />
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <Upload className="size-3.5" />
-              PDF or photo auto-fills vendor, due date, items, and total · max 10MB
+              OCR reads vendor, due date, items, and total from PDF or photo · max 10MB
             </div>
           </div>
           {extracting ? (
             <p className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="size-3.5 animate-spin" />
-              Reading vendor, due date, items, and total…
+              Running OCR on vendor, due date, items, and total…
             </p>
           ) : extractNote ? (
             <p
@@ -384,7 +384,7 @@ export function BillCreateForm({
             </p>
           ) : (
             <p className="text-xs text-muted-foreground">
-              Upload a PDF or photo of the bill. Review the filled fields before
+              Upload a PDF or photo. OCR fills the form — review it before
               submitting. Word files attach only.
             </p>
           )}

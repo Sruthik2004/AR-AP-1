@@ -1,12 +1,11 @@
 "use server"
 
 import { revalidatePath } from "next/cache"
-import { generateText, Output } from "ai"
-import { z } from "zod"
 
+import { parseInvoiceText, normalizeName } from "@/lib/ap/parse-invoice-text"
+import { readBillText } from "@/lib/ap/read-bill-text"
 import { requireOrgContext } from "@/lib/auth/org"
 import { DEFAULT_CURRENCY } from "@/lib/currency"
-import { GST_TAX_RATES } from "@/types/bills"
 
 const EXTRACT_MIME = new Set([
   "application/pdf",
@@ -14,24 +13,6 @@ const EXTRACT_MIME = new Set([
   "image/png",
   "image/webp",
 ])
-
-const billExtractSchema = z.object({
-  vendorName: z.string(),
-  vendorEmail: z.string(),
-  vendorPhone: z.string(),
-  vendorTaxId: z.string(),
-  billNumber: z.string(),
-  invoiceDate: z.string(),
-  dueDate: z.string(),
-  items: z.array(
-    z.object({
-      description: z.string(),
-      quantity: z.number(),
-      unitPrice: z.number(),
-      taxRate: z.number(),
-    })
-  ),
-})
 
 export type ExtractedBillItem = {
   description: string
@@ -58,29 +39,6 @@ export type ExtractBillResult =
       message: string
     }
   | { success: false; error: string }
-
-function normalizeName(value: string) {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .replace(
-      /\b(pvt|pvt ltd|private|limited|ltd|llp|inc|llc|co|company)\b/g,
-      " "
-    )
-    .replace(/\s+/g, " ")
-    .trim()
-}
-
-function nearestGst(rate: number) {
-  return GST_TAX_RATES.reduce((best, candidate) =>
-    Math.abs(candidate - rate) < Math.abs(best - rate) ? candidate : best
-  )
-}
-
-function parseIsoDate(value: string) {
-  const match = value.trim().match(/^(\d{4}-\d{2}-\d{2})/)
-  return match?.[1] ?? null
-}
 
 function addDaysIso(iso: string, days: number) {
   const date = new Date(`${iso}T00:00:00Z`)
@@ -131,7 +89,7 @@ export async function extractBillFromUpload(
     return {
       success: false,
       error:
-        "Auto-fill works with PDF, JPG, PNG, or WebP. Word files can still be attached, but details must be entered by hand.",
+        "OCR works with PDF, JPG, PNG, or WebP. Word files can still be attached, but details must be entered by hand.",
     }
   }
 
@@ -148,89 +106,50 @@ export async function extractBillFromUpload(
   const knownVendors = vendors ?? []
   const bytes = new Uint8Array(await file.arrayBuffer())
 
-  let extracted: z.infer<typeof billExtractSchema>
+  let text = ""
   try {
-    const result = await generateText({
-      model: "openai/gpt-5.4",
-      output: Output.object({ schema: billExtractSchema }),
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: `Extract a vendor bill / tax invoice for an Indian AP system.
-Return empty strings when a field is not visible.
-Dates must be YYYY-MM-DD. Use dueDate when printed; otherwise leave dueDate empty and still return invoiceDate.
-Quantity should be a whole number when possible.
-taxRate is GST percent (0, 5, 12, 18, or 28).
-Prefer the seller/vendor (who issued the invoice), not the customer/bill-to party.
-Known vendors: ${
-                knownVendors.length
-                  ? knownVendors
-                      .map((vendor) => `${vendor.name} <${vendor.email ?? ""}>`)
-                      .join("; ")
-                  : "none"
-              }.`,
-            },
-            {
-              type: "file",
-              data: bytes,
-              mediaType,
-              filename: file.name,
-            },
-          ],
-        },
-      ],
-    })
-
-    if (!result.output) {
-      return {
-        success: false,
-        error: "Could not read details from this file. Enter them manually.",
-      }
-    }
-
-    extracted = result.output
+    text = await readBillText(bytes, mediaType)
   } catch (error) {
-    const message = error instanceof Error ? error.message : ""
-    if (/api key|oidc|unauthorized|forbidden/i.test(message)) {
-      return {
-        success: false,
-        error:
-          "Bill reading is not configured yet. The file is still attached — fill vendor, dates, and items by hand.",
-      }
-    }
+    console.error("bill OCR failed", error)
     return {
       success: false,
       error:
-        "Could not read this bill automatically. Check the file is a clear PDF or photo, then fill any missing fields.",
+        "OCR could not read this bill. Use a clear PDF or photo, then fill any missing fields.",
     }
   }
+
+  if (text.replace(/\s+/g, " ").trim().length < 12) {
+    return {
+      success: false,
+      error:
+        "OCR found no readable text. Try a clearer PDF or photo, then fill any missing fields.",
+    }
+  }
+
+  const extracted = parseInvoiceText(text, {
+    fileName: file.name,
+    knownVendors,
+  })
 
   const vendorName = extracted.vendorName.trim()
   const vendorEmail = extracted.vendorEmail.trim()
   const billNumber = extracted.billNumber.trim() || null
-  let dueDate = parseIsoDate(extracted.dueDate)
-  if (!dueDate) {
-    const invoiceDate = parseIsoDate(extracted.invoiceDate)
-    if (invoiceDate) dueDate = addDaysIso(invoiceDate, 30)
+  let dueDate = extracted.dueDate
+  if (!dueDate && extracted.invoiceDate) {
+    dueDate = addDaysIso(extracted.invoiceDate, 30)
   }
 
-  const items = (extracted.items ?? [])
+  const items = extracted.items
     .map((item) => {
       const description = item.description.trim()
-      const quantity = Math.max(1, Math.round(Number(item.quantity) || 1))
-      const unitPrice = Number(item.unitPrice)
-      const taxRate = nearestGst(Number(item.taxRate) || 0)
-      if (!description || !Number.isFinite(unitPrice) || unitPrice < 0) {
+      if (!description || !Number.isFinite(item.unitPrice) || item.unitPrice < 0) {
         return null
       }
       return {
         description,
-        quantity: String(quantity),
-        unit_price: String(unitPrice),
-        tax_rate: String(taxRate),
+        quantity: String(Math.max(1, Math.round(item.quantity) || 1)),
+        unit_price: String(item.unitPrice),
+        tax_rate: String(item.taxRate),
       } satisfies ExtractedBillItem
     })
     .filter((item): item is ExtractedBillItem => item !== null)
@@ -252,8 +171,9 @@ Known vendors: ${
     if (match) {
       vendorId = match.id
     } else {
-      const email =
-        vendorEmail.includes("@") ? vendorEmail : vendorPlaceholderEmail(vendorName)
+      const email = vendorEmail.includes("@")
+        ? vendorEmail
+        : vendorPlaceholderEmail(vendorName)
       const { data: created, error: createError } = await supabase
         .from("contacts")
         .insert({
@@ -284,7 +204,7 @@ Known vendors: ${
           entity_id: created.id,
           changes_json: {
             after: {
-              source: "bill-upload",
+              source: "bill-ocr",
               name: vendorName,
               email,
             },
@@ -312,7 +232,7 @@ Known vendors: ${
     dueDate,
     items,
     message: filled.length
-      ? `Filled ${filled.join(", ")} from the upload. Review before submitting.`
-      : "The file is attached, but no bill details could be read. Enter them manually.",
+      ? `Filled ${filled.join(", ")} from OCR. Review before submitting.`
+      : "The file is attached, but OCR could not find bill details. Enter them manually.",
   }
 }

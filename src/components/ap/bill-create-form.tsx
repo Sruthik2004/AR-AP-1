@@ -364,7 +364,7 @@ export function BillCreateForm({
             />
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <Upload className="size-3.5" />
-              OCR reads vendor, due date, items, and total from PDF or photo · max 10MB
+              OCR reads the bill, and converts USD or other currencies to INR · max 10MB
             </div>
           </div>
           {extracting ? (

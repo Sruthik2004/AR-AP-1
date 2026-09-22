@@ -15,6 +15,7 @@ export type ParsedInvoice = {
   billNumber: string
   invoiceDate: string | null
   dueDate: string | null
+  currency: string
   items: ParsedInvoiceItem[]
 }
 
@@ -189,6 +190,29 @@ function findVendorName(text: string, knownVendors: KnownVendor[]) {
         )
     ) ?? ""
   )
+}
+
+function detectCurrency(text: string) {
+  const totalLine =
+    text.match(
+      /(?:grand\s*total|invoice\s*total|amount\s*payable|(?<![a-z])total(?!\s*in\s*words))[^\n]{0,48}/i
+    )?.[0] ?? ""
+
+  const scored = [
+    { code: "USD", pattern: /\$|usd|united states dollar/i },
+    { code: "EUR", pattern: /€|eur\b|euro/i },
+    { code: "GBP", pattern: /£|gbp\b|pound sterling/i },
+    { code: "AED", pattern: /\baed\b|dirham/i },
+    { code: "INR", pattern: /₹|\binr\b|\brs\.?\b|rupee/i },
+  ] as const
+
+  for (const candidate of scored) {
+    if (candidate.pattern.test(totalLine)) return candidate.code
+  }
+  for (const candidate of scored) {
+    if (candidate.pattern.test(text)) return candidate.code
+  }
+  return "INR"
 }
 
 function findBillNumber(text: string, fileName?: string) {
@@ -386,6 +410,7 @@ export function parseInvoiceText(
     billNumber: findBillNumber(cleaned, options?.fileName),
     invoiceDate,
     dueDate,
+    currency: detectCurrency(cleaned),
     items: parseLineItems(cleaned, taxRate),
   }
 }

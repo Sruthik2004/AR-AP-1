@@ -5,7 +5,9 @@ import { revalidatePath } from "next/cache"
 import { parseInvoiceText, normalizeName } from "@/lib/ap/parse-invoice-text"
 import { readBillText } from "@/lib/ap/read-bill-text"
 import { requireOrgContext } from "@/lib/auth/org"
-import { DEFAULT_CURRENCY } from "@/lib/currency"
+import { DEFAULT_CURRENCY, formatINR, formatMoney } from "@/lib/currency"
+import { getRateToInr } from "@/lib/fx"
+import { calcLineTotal, roundMoney } from "@/types/bills"
 
 const EXTRACT_MIME = new Set([
   "application/pdf",
@@ -139,6 +141,29 @@ export async function extractBillFromUpload(
     dueDate = addDaysIso(extracted.invoiceDate, 30)
   }
 
+  const sourceCurrency = extracted.currency || DEFAULT_CURRENCY
+  let fxNote: string | null = null
+  let amountMultiplier = 1
+
+  if (sourceCurrency !== DEFAULT_CURRENCY) {
+    const quote = await getRateToInr(
+      sourceCurrency,
+      extracted.invoiceDate ?? dueDate
+    )
+    if (!quote) {
+      return {
+        success: false,
+        error: `This bill is in ${sourceCurrency}. An INR exchange rate could not be fetched, so amounts were not posted as rupees. Try the upload again.`,
+      }
+    }
+    amountMultiplier = quote.rate
+    const sourceTotal = extracted.items.reduce(
+      (sum, item) => sum + calcLineTotal(item.quantity, item.unitPrice, item.taxRate),
+      0
+    )
+    fxNote = `Bill is ${sourceCurrency}. Converted ${formatMoney(sourceTotal, sourceCurrency)} at ${formatINR(quote.rate)} per ${sourceCurrency} (${quote.asOf}) → ${formatINR(roundMoney(sourceTotal * quote.rate))}.`
+  }
+
   const items = extracted.items
     .map((item) => {
       const description = item.description.trim()
@@ -148,7 +173,7 @@ export async function extractBillFromUpload(
       return {
         description,
         quantity: String(Math.max(1, Math.round(item.quantity) || 1)),
-        unit_price: String(item.unitPrice),
+        unit_price: String(roundMoney(item.unitPrice * amountMultiplier)),
         tax_rate: String(item.taxRate),
       } satisfies ExtractedBillItem
     })
@@ -183,7 +208,7 @@ export async function extractBillFromUpload(
           email,
           phone: extracted.vendorPhone.trim() || null,
           tax_id: extracted.vendorTaxId.trim() || null,
-          currency: DEFAULT_CURRENCY,
+          currency: sourceCurrency,
         })
         .select("id, name, email, currency")
         .single()
@@ -232,7 +257,7 @@ export async function extractBillFromUpload(
     dueDate,
     items,
     message: filled.length
-      ? `Filled ${filled.join(", ")} from OCR. Review before submitting.`
+      ? `${fxNote ? `${fxNote} ` : ""}Filled ${filled.join(", ")} from OCR. Review before submitting.`
       : "The file is attached, but OCR could not find bill details. Enter them manually.",
   }
 }

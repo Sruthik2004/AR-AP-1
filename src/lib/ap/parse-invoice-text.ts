@@ -324,11 +324,21 @@ function trailingMoney(line: string) {
 
 const UNIT_TOKEN = "NOS|PCS|PC|UNT|UNITS?|KG|MTR|BOX|SET|QTY"
 
+function normalizeGoodsLine(line: string) {
+  return line
+    .replace(/([A-Za-z])(\d)/g, "$1 $2")
+    .replace(/(\d)([A-Za-z])/g, "$1 $2")
+    .replace(/([\d,]+\.\d{2})(\d+)/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
 function parseTallyGoodsRow(
   line: string,
   taxRate: number
 ): ParsedInvoiceItem | null {
-  const match = line.match(
+  const normalized = normalizeGoodsLine(line)
+  const match = normalized.match(
     new RegExp(
       `^(\\d{1,3})\\s+(.+?)\\s+([\\d,]+\\.\\d{2})\\s+(?:${UNIT_TOKEN})?\\s*([\\d,]+\\.\\d{2})\\s+(\\d+(?:\\.\\d+)?)\\s*(?:${UNIT_TOKEN})?\\s+(\\d{4,8})$`,
       "i"
@@ -355,9 +365,10 @@ function parseAmountRow(line: string, taxRate: number): ParsedInvoiceItem | null
   const tally = parseTallyGoodsRow(line, taxRate)
   if (tally) return tally
 
-  if (isHsnBreakupLine(line) || /^\d{4,8}\s+/.test(line)) return null
+  const normalized = normalizeGoodsLine(line)
+  if (isHsnBreakupLine(normalized) || /^\d{4,8}\s+/.test(normalized)) return null
 
-  const money = trailingMoney(line)
+  const money = trailingMoney(normalized)
   if (!money || money.amount <= 0) return null
 
   let rest = money.rest
@@ -464,7 +475,7 @@ function parseLineItems(text: string, taxRate: number): ParsedInvoiceItem[] {
         description: "Invoice total",
         quantity: 1,
         unitPrice: grandTotal,
-        taxRate,
+        taxRate: 0,
       },
     ]
   }

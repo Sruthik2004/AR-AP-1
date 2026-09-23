@@ -146,10 +146,7 @@ export async function extractBillFromUpload(
   let amountMultiplier = 1
 
   if (sourceCurrency !== DEFAULT_CURRENCY) {
-    const quote = await getRateToInr(
-      sourceCurrency,
-      extracted.invoiceDate ?? dueDate
-    )
+    const quote = await getRateToInr(sourceCurrency)
     if (!quote) {
       return {
         success: false,
@@ -161,7 +158,7 @@ export async function extractBillFromUpload(
       (sum, item) => sum + calcLineTotal(item.quantity, item.unitPrice, item.taxRate),
       0
     )
-    fxNote = `Bill is ${sourceCurrency}. Converted ${formatMoney(sourceTotal, sourceCurrency)} at ${formatINR(quote.rate)} per ${sourceCurrency} (${quote.asOf}) → ${formatINR(roundMoney(sourceTotal * quote.rate))}.`
+    fxNote = `Bill is ${sourceCurrency}. Converted ${formatMoney(sourceTotal, sourceCurrency)} at today's rate of ${formatINR(quote.rate)} per ${sourceCurrency} (${quote.asOf}) → ${formatINR(roundMoney(sourceTotal * quote.rate))}.`
   }
 
   const items = extracted.items

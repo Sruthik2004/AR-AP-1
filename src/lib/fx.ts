@@ -29,12 +29,9 @@ async function fetchJson<T>(url: string): Promise<T> {
   return (await response.json()) as T
 }
 
-async function frankfurterRate(from: string, asOf?: string | null) {
-  const date =
-    asOf && /^\d{4}-\d{2}-\d{2}$/.test(asOf) ? asOf : "latest"
-  const path = date === "latest" ? "latest" : date
+async function frankfurterLatest(from: string) {
   const data = await fetchJson<FrankfurterResponse>(
-    `https://api.frankfurter.dev/v1/${path}?base=${encodeURIComponent(from)}&symbols=INR`
+    `https://api.frankfurter.dev/v1/latest?base=${encodeURIComponent(from)}&symbols=INR`
   )
   const rate = data.rates?.INR
   if (!rate || !Number.isFinite(rate) || rate <= 0) {
@@ -44,7 +41,7 @@ async function frankfurterRate(from: string, asOf?: string | null) {
     from,
     to: "INR",
     rate,
-    asOf: data.date ?? (date === "latest" ? new Date().toISOString().slice(0, 10) : date),
+    asOf: data.date ?? new Date().toISOString().slice(0, 10),
     source: "frankfurter",
   } satisfies FxQuote
 }
@@ -69,10 +66,7 @@ async function openErRate(from: string) {
   } satisfies FxQuote
 }
 
-export async function getRateToInr(
-  from: string,
-  asOf?: string | null
-): Promise<FxQuote | null> {
+export async function getRateToInr(from: string): Promise<FxQuote | null> {
   const code = from.trim().toUpperCase()
   if (!/^[A-Z]{3}$/.test(code)) return null
   if (code === "INR") {
@@ -80,17 +74,17 @@ export async function getRateToInr(
       from: "INR",
       to: "INR",
       rate: 1,
-      asOf: asOf ?? new Date().toISOString().slice(0, 10),
+      asOf: new Date().toISOString().slice(0, 10),
       source: "identity",
     }
   }
 
   try {
-    return await frankfurterRate(code, asOf)
+    return await openErRate(code)
   } catch (primary) {
     console.error("primary FX lookup failed", primary)
     try {
-      return await openErRate(code)
+      return await frankfurterLatest(code)
     } catch (fallback) {
       console.error("fallback FX lookup failed", fallback)
       return null

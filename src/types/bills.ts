@@ -1,10 +1,11 @@
 import {
   calcLineTotal,
+  calcTaxAmount,
   roundMoney,
   GST_TAX_RATES,
 } from "@/types/invoices"
 
-export { calcLineTotal, roundMoney, GST_TAX_RATES }
+export { calcLineTotal, calcTaxAmount, roundMoney, GST_TAX_RATES }
 
 export type BillStatus =
   | "draft"

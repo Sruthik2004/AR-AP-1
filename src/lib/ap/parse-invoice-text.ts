@@ -14,6 +14,7 @@ export type ParsedInvoice = {
   vendorTaxId: string
   billNumber: string
   invoiceDate: string | null
+  invoiceDateVerified: boolean
   dueDate: string | null
   currency: string
   items: ParsedInvoiceItem[]
@@ -95,6 +96,7 @@ function parseLooseDate(raw: string) {
     const second = Number(numeric[2])
     const year = Number(numeric[3])
     if (first > 12) return toIsoDate(year, second, first)
+    if (second > 12) return toIsoDate(year, first, second)
     return toIsoDate(year, second, first)
   }
 
@@ -141,30 +143,46 @@ function firstGstin(text: string) {
 
 function sellerSection(text: string) {
   return text.split(
-    /bill\s*to|billed\s*to|buyer|customer\s*name|ship\s*to|place\s*of\s*supply/i
+    /consignee|bill\s*to|billed\s*to|buyer\s*\(|buyer \(bill|details of (?:receiver|buyer|recipient)|customer\s*name|ship\s*to|place\s*of\s*supply/i
   )[0]
 }
 
+function isBoilerplateLine(line: string) {
+  return /^(tax\s*invoice|invoice|original|duplicate|e-?invoice|irn|ack(?:nowledgement)?\s*no|computer generated)/i.test(
+    line
+  )
+}
+
+function isAddressLike(line: string) {
+  return /shop\.?\s*no|gstin|uin:|state name|e-?mail|phone|mobile|address|pin\s*code|floor|building|plot no|road|hyderabad|secunderabad|telangana/i.test(
+    line
+  )
+}
+
 function companyLike(line: string) {
-  return /\b(pvt\.?\s*ltd\.?|private\s+limited|limited|ltd\.?|llp|inc\.?|llc|enterprises|traders|supplies|solutions|industries)\b/i.test(
+  return /\b(pvt\.?\s*ltd\.?|private\s+limited|limited|ltd\.?|llp|inc\.?|llc|enterprises|traders|supplies|solutions|industries|centre|center)\b/i.test(
     line
   )
 }
 
 function findVendorName(text: string, knownVendors: KnownVendor[]) {
-  const normalizedText = normalizeName(text)
+  const seller = sellerSection(text)
+  const normalizedSeller = normalizeName(seller)
   const known = knownVendors.find((vendor) => {
     const current = normalizeName(vendor.name)
-    return current.length >= 3 && normalizedText.includes(current)
+    return current.length >= 3 && normalizedSeller.includes(current)
   })
   if (known) return known.name
 
-  const seller = sellerSection(text)
   const labeled = labeledValue(
     seller,
     /(?:supplier|seller|vendor|from|billed\s*by|tax\s*invoice\s*from)[:\s]+([^\n]{3,80})/i
   )
-  if (labeled && !/tax\s*invoice|original|duplicate/i.test(labeled)) {
+  if (
+    labeled &&
+    !/tax\s*invoice|original|duplicate/i.test(labeled) &&
+    !isAddressLike(labeled)
+  ) {
     return labeled.replace(/\s+/g, " ").trim()
   }
 
@@ -176,7 +194,9 @@ function findVendorName(text: string, knownVendors: KnownVendor[]) {
   const company = lines.find(
     (line) =>
       companyLike(line) &&
-      !/tax\s*invoice|original\s+for|duplicate|gstin|invoice\s*no/i.test(line)
+      !isBoilerplateLine(line) &&
+      !isAddressLike(line) &&
+      !/invoice\s*no/i.test(line)
   )
   if (company) return company
 
@@ -185,9 +205,9 @@ function findVendorName(text: string, knownVendors: KnownVendor[]) {
       (line) =>
         line.length >= 4 &&
         line.length <= 80 &&
-        !/tax\s*invoice|original|duplicate|gstin|invoice|date|phone|email|address/i.test(
-          line
-        )
+        !isBoilerplateLine(line) &&
+        !isAddressLike(line) &&
+        !/invoice|date|phone|email|address|gstin/i.test(line)
     ) ?? ""
   )
 }
@@ -215,32 +235,32 @@ function detectCurrency(text: string) {
   return "INR"
 }
 
+function looksLikeBillNumber(value: string) {
+  const cleaned = value.replace(/[^\w/.-]/g, "")
+  if (!cleaned || cleaned.length > 32) return false
+  if (!/\d/.test(cleaned)) return false
+  if (/^(invoice|tax|gstin|dated|date|hsn|sac|total)$/i.test(cleaned)) {
+    return false
+  }
+  return true
+}
+
 function findBillNumber(text: string, fileName?: string) {
-  const labeled = labeledValue(
-    text,
-    /(?:invoice|bill|tax\s*invoice|inv|document)[\s#:.-]*(?:no|number|#)?[:.\s]*([A-Z0-9][A-Z0-9/._-]{2,})/i
-  )
-  if (labeled && !/date|gstin/i.test(labeled)) return labeled
+  const labeled = text.match(
+    /(?:invoice|bill|tax\s*invoice|inv)\s*(?:no|num(?:ber)?|#)\.?\s*[:.]?\s*([A-Z0-9][A-Z0-9/._-]{1,})/i
+  )?.[1]
+  if (labeled && looksLikeBillNumber(labeled)) return labeled
 
   const stem = fileName?.replace(/\.[^.]+$/, "") ?? ""
-  if (/^[A-Z0-9][A-Z0-9._-]{2,}$/i.test(stem)) return stem
+  if (looksLikeBillNumber(stem) && /^[A-Z0-9][A-Z0-9._-]{2,}$/i.test(stem)) {
+    return stem
+  }
   return ""
 }
 
 function findLabeledDate(text: string, labels: RegExp) {
   const match = text.match(labels)
   return match?.[1] ? parseLooseDate(match[1]) : null
-}
-
-function findAnyDate(text: string) {
-  const matches = text.matchAll(
-    /(\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4}|\d{4}-\d{2}-\d{2}|\d{1,2}[\s.\-][A-Za-z]{3,9}[\s.\-,]+\d{2,4})/g
-  )
-  for (const match of matches) {
-    const parsed = parseLooseDate(match[1])
-    if (parsed) return parsed
-  }
-  return null
 }
 
 function documentGst(text: string) {
@@ -269,15 +289,26 @@ function isHsn(value: string) {
 }
 
 function isSummaryLine(line: string) {
-  return /^(sub\s*total|taxable|igst|cgst|sgst|utgst|gst|round\s*off|grand\s*total|amount\s*payable|total\s*in\s*words|amount\s*in\s*words|total\b)/i.test(
+  return /^(sub\s*total|taxable|igst|cgst|sgst|utgst|gst|round\s*off|grand\s*total|amount\s*payable|amount chargeable|total\s*in\s*words|amount\s*in\s*words|total\b)/i.test(
     line
   )
 }
 
+function isHsnBreakupLine(line: string) {
+  if (/hsn\/?sac/i.test(line) && /(?:taxable|cgst|sgst|igst|tax amount)/i.test(line)) {
+    return true
+  }
+  return /^\d{4,8}\s+[\d,]/.test(line) && /\d\s*%/.test(line)
+}
+
 function isJunkDescription(line: string) {
-  return /^(sno|sl\.?\s*no|item|description|hsn|sac|qty|quantity|rate|amount|particulars|page\s+\d)\b/i.test(
+  return /^(sno|sl\.?\s*no|item|description|hsn|sac|qty|quantity|rate|amount|particulars|page\s+\d|no\.?\s*\(incl)/i.test(
     line
   )
+}
+
+function hasProductName(value: string) {
+  return /[A-Za-z]{3,}/.test(value.replace(/\b(nos|pcs|hsn|sac|gst|cgst|sgst|igst)\b/gi, ""))
 }
 
 function trailingMoney(line: string) {
@@ -291,7 +322,41 @@ function trailingMoney(line: string) {
   }
 }
 
+const UNIT_TOKEN = "NOS|PCS|PC|UNT|UNITS?|KG|MTR|BOX|SET|QTY"
+
+function parseTallyGoodsRow(
+  line: string,
+  taxRate: number
+): ParsedInvoiceItem | null {
+  const match = line.match(
+    new RegExp(
+      `^(\\d{1,3})\\s+(.+?)\\s+([\\d,]+\\.\\d{2})\\s+(?:${UNIT_TOKEN})?\\s*([\\d,]+\\.\\d{2})\\s+(\\d+(?:\\.\\d+)?)\\s*(?:${UNIT_TOKEN})?\\s+(\\d{4,8})$`,
+      "i"
+    )
+  )
+  if (!match) return null
+
+  const description = match[2].replace(/\s+/g, " ").trim()
+  const rate = parseMoney(match[4])
+  const quantity = Number(match[5])
+  if (!hasProductName(description) || rate == null || !Number.isFinite(quantity)) {
+    return null
+  }
+
+  return {
+    description,
+    quantity: Math.max(1, Math.round(quantity) || 1),
+    unitPrice: rate,
+    taxRate,
+  }
+}
+
 function parseAmountRow(line: string, taxRate: number): ParsedInvoiceItem | null {
+  const tally = parseTallyGoodsRow(line, taxRate)
+  if (tally) return tally
+
+  if (isHsnBreakupLine(line) || /^\d{4,8}\s+/.test(line)) return null
+
   const money = trailingMoney(line)
   if (!money || money.amount <= 0) return null
 
@@ -320,7 +385,12 @@ function parseAmountRow(line: string, taxRate: number): ParsedInvoiceItem | null
   }
 
   rest = rest.replace(/^\d{1,3}\s+/, "").trim()
-  if (rest.length < 3 || isJunkDescription(rest) || isSummaryLine(rest)) {
+  if (
+    rest.length < 3 ||
+    isJunkDescription(rest) ||
+    isSummaryLine(rest) ||
+    !hasProductName(rest)
+  ) {
     return null
   }
 
@@ -332,6 +402,21 @@ function parseAmountRow(line: string, taxRate: number): ParsedInvoiceItem | null
   }
 }
 
+function isContinuationLine(line: string) {
+  return (
+    !/^\d{1,3}\s/.test(line) &&
+    !trailingMoney(line) &&
+    !isSummaryLine(line) &&
+    !isHsnBreakupLine(line) &&
+    !isJunkDescription(line) &&
+    hasProductName(line) &&
+    line.length <= 80 &&
+    !/gstin|state name|amount chargeable|declaration|bank name|authorised|company.?s pan|terms of delivery/i.test(
+      line
+    )
+  )
+}
+
 function parseLineItems(text: string, taxRate: number): ParsedInvoiceItem[] {
   const lines = text
     .split(/\n+/)
@@ -339,14 +424,25 @@ function parseLineItems(text: string, taxRate: number): ParsedInvoiceItem[] {
     .filter(Boolean)
 
   const headerIndex = lines.findIndex((line) =>
-    /(?:s\.?\s*no|sno|sl\.?\s*no).*(?:item|description|particulars)/i.test(line)
+    /(?:s\.?\s*no|sno|sl\.?\s*no).*(?:item|description|particulars|goods)/i.test(
+      line
+    )
   )
   const body = headerIndex >= 0 ? lines.slice(headerIndex + 1) : lines
   const items: ParsedInvoiceItem[] = []
 
   for (const line of body) {
+    if (isHsnBreakupLine(line) || /amount chargeable|tax amount \(in words\)|company.?s pan/i.test(line)) {
+      if (items.length) break
+      continue
+    }
     if (isSummaryLine(line) || /total\s*in\s*words|authorized\s+signature|payment\s+terms/i.test(line)) {
       if (items.length) break
+      continue
+    }
+    if (items.length && isContinuationLine(line)) {
+      const last = items[items.length - 1]
+      last.description = `${last.description} ${line}`.replace(/\s+/g, " ").trim()
       continue
     }
     const item = parseAmountRow(line, taxRate)
@@ -381,12 +477,13 @@ export function parseInvoiceText(
   options?: { fileName?: string; knownVendors?: KnownVendor[] }
 ): ParsedInvoice {
   const cleaned = text.replace(/\u00a0/g, " ").replace(/[ \t]+/g, " ")
+  const seller = sellerSection(cleaned)
+  const labeledInvoiceDate = findLabeledDate(
+    cleaned,
+    /(?:invoice\s*date|bill\s*date|date\s*of\s*invoice|inv\.?\s*date|dated)[:\s]+([0-9A-Za-z/.\- ,]{6,20})/i
+  )
+  const invoiceDate = labeledInvoiceDate
   const taxRate = documentGst(cleaned)
-  const invoiceDate =
-    findLabeledDate(
-      cleaned,
-      /(?:invoice\s*date|bill\s*date|dated)[:\s]+([0-9A-Za-z/.\- ,]{6,20})/i
-    ) ?? findAnyDate(cleaned)
 
   let dueDate = findLabeledDate(
     cleaned,
@@ -404,11 +501,12 @@ export function parseInvoiceText(
 
   return {
     vendorName: findVendorName(cleaned, options?.knownVendors ?? []),
-    vendorEmail: firstEmail(cleaned),
-    vendorPhone: firstPhone(cleaned),
-    vendorTaxId: firstGstin(cleaned),
+    vendorEmail: firstEmail(seller) || firstEmail(cleaned),
+    vendorPhone: firstPhone(seller) || firstPhone(cleaned),
+    vendorTaxId: firstGstin(seller) || firstGstin(cleaned),
     billNumber: findBillNumber(cleaned, options?.fileName),
     invoiceDate,
+    invoiceDateVerified: Boolean(labeledInvoiceDate),
     dueDate,
     currency: detectCurrency(cleaned),
     items: parseLineItems(cleaned, taxRate),

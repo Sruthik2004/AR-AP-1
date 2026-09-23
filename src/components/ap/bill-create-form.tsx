@@ -26,11 +26,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { formatINR } from "@/lib/currency"
+import { formatINR, formatMoney } from "@/lib/currency"
 import {
   BILL_APPROVAL_THRESHOLD,
   GST_TAX_RATES,
   calcLineTotal,
+  calcTaxAmount,
   roundMoney,
 } from "@/types/bills"
 
@@ -94,6 +95,14 @@ export function BillCreateForm({
   const [extracting, setExtracting] = React.useState(false)
   const [extractNote, setExtractNote] = React.useState<string | null>(null)
   const [extractFailed, setExtractFailed] = React.useState(false)
+  const [needsReview, setNeedsReview] = React.useState(false)
+  const [fxSummary, setFxSummary] = React.useState<{
+    invoiceDate: string
+    sourceCurrency: string
+    sourceTotal: number
+    fxRate: number
+    inrTotal: number
+  } | null>(null)
   const extractGen = React.useRef(0)
   const [lines, setLines] = React.useState<LineItemDraft[]>([createEmptyLine()])
 
@@ -106,7 +115,7 @@ export function BillCreateForm({
     const unitPrice = Number(line.unit_price) || 0
     const taxRate = Number(line.tax_rate) || 0
     const subtotal = roundMoney(quantity * unitPrice)
-    const taxAmount = roundMoney((subtotal * taxRate) / 100)
+    const taxAmount = calcTaxAmount(quantity, unitPrice, taxRate)
     const lineTotal = calcLineTotal(quantity, unitPrice, taxRate)
     return {
       ...line,
@@ -125,9 +134,7 @@ export function BillCreateForm({
   const taxTotal = roundMoney(
     computedLines.reduce((sum, line) => sum + line.taxAmount, 0)
   )
-  const grandTotal = roundMoney(
-    computedLines.reduce((sum, line) => sum + line.lineTotal, 0)
-  )
+  const grandTotal = roundMoney(subtotal + taxTotal)
   const requiresApproval = grandTotal > BILL_APPROVAL_THRESHOLD
   const busy = pending || extracting
 
@@ -148,6 +155,8 @@ export function BillCreateForm({
     setAttachment(file)
     setExtractNote(null)
     setExtractFailed(false)
+    setNeedsReview(false)
+    setFxSummary(null)
     if (!file) return
 
     setExtracting(true)
@@ -161,6 +170,23 @@ export function BillCreateForm({
         setExtractFailed(true)
         setExtractNote(result.error)
         return
+      }
+
+      setNeedsReview(result.needsReview)
+      if (
+        !result.needsReview &&
+        result.invoiceDate &&
+        result.fxRate &&
+        result.sourceTotal != null &&
+        result.inrTotal != null
+      ) {
+        setFxSummary({
+          invoiceDate: result.invoiceDate,
+          sourceCurrency: result.sourceCurrency,
+          sourceTotal: result.sourceTotal,
+          fxRate: result.fxRate,
+          inrTotal: result.inrTotal,
+        })
       }
 
       if (result.newVendor) {
@@ -364,18 +390,18 @@ export function BillCreateForm({
             />
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <Upload className="size-3.5" />
-              OCR reads the bill, and converts USD or other currencies to INR · max 10MB
+              OCR reads the invoice date and converts USD at that day's USD-to-INR rate · max 10MB
             </div>
           </div>
           {extracting ? (
             <p className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="size-3.5 animate-spin" />
-              Running OCR on vendor, due date, items, and total…
+              Running OCR on vendor, invoice date, due date, items, and total…
             </p>
           ) : extractNote ? (
             <p
               className={
-                extractFailed
+                extractFailed || needsReview
                   ? "text-sm text-amber-800 dark:text-amber-200"
                   : "text-sm text-muted-foreground"
               }
@@ -384,10 +410,18 @@ export function BillCreateForm({
             </p>
           ) : (
             <p className="text-xs text-muted-foreground">
-              Upload a PDF or photo. OCR fills the form — review it before
-              submitting. Word files attach only.
+              Upload a PDF or photo. OCR fills the form and converts foreign
+              amounts using the invoice-date rate — review it before submitting.
+              Word files attach only.
             </p>
           )}
+          {fxSummary ? (
+            <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm tabular-nums">
+              {formatMoney(fxSummary.sourceTotal, fxSummary.sourceCurrency)} ×{" "}
+              {formatINR(fxSummary.fxRate)} per {fxSummary.sourceCurrency} on{" "}
+              {fxSummary.invoiceDate} = {formatINR(fxSummary.inrTotal)}
+            </p>
+          ) : null}
           {attachment && !extracting ? (
             <p className="text-xs text-muted-foreground">
               Selected: {attachment.name}
@@ -534,6 +568,14 @@ export function BillCreateForm({
             : "status → approved (auto)"}
         </p>
       </div>
+
+      {needsReview ? (
+        <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
+          Review required: the invoice date or historical USD-to-INR rate could
+          not be confirmed, so amounts were not converted. Check OCR values
+          before submitting.
+        </p>
+      ) : null}
 
       {error ? (
         <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">

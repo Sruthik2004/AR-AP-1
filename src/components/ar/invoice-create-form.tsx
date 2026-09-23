@@ -28,6 +28,7 @@ import { formatINR } from "@/lib/currency"
 import {
   GST_TAX_RATES,
   calcLineTotal,
+  calcTaxAmount,
   roundMoney,
 } from "@/types/invoices"
 
@@ -105,7 +106,7 @@ export function InvoiceCreateForm({
     const unitPrice = Number(line.unit_price) || 0
     const taxRate = Number(line.tax_rate) || 0
     const subtotal = roundMoney(quantity * unitPrice)
-    const taxAmount = roundMoney((subtotal * taxRate) / 100)
+    const taxAmount = calcTaxAmount(quantity, unitPrice, taxRate)
     const lineTotal = calcLineTotal(quantity, unitPrice, taxRate)
     return { ...line, quantity, unitPrice, taxRate, subtotal, taxAmount, lineTotal }
   })
@@ -116,9 +117,7 @@ export function InvoiceCreateForm({
   const taxTotal = roundMoney(
     computedLines.reduce((sum, line) => sum + line.taxAmount, 0)
   )
-  const grandTotal = roundMoney(
-    computedLines.reduce((sum, line) => sum + line.lineTotal, 0)
-  )
+  const grandTotal = roundMoney(subtotal + taxTotal)
 
   function updateLine(key: string, patch: Partial<LineItemDraft>) {
     setLines((prev) =>

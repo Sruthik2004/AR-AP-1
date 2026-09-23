@@ -55,13 +55,30 @@ export function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100
 }
 
+/** GST on intra-state bills is CGST + SGST, each rounded, then added. */
+export function calcTaxAmount(
+  quantity: number,
+  unitPrice: number,
+  taxRate: number
+) {
+  const subtotal = roundMoney(quantity * unitPrice)
+  if (!Number.isFinite(subtotal) || subtotal <= 0 || taxRate <= 0) return 0
+
+  if (taxRate % 2 === 0) {
+    const component = roundMoney((subtotal * (taxRate / 2)) / 100)
+    return roundMoney(component * 2)
+  }
+
+  return roundMoney((subtotal * taxRate) / 100)
+}
+
 export function calcLineTotal(
   quantity: number,
   unitPrice: number,
   taxRate: number
 ) {
-  const subtotal = quantity * unitPrice
-  return roundMoney(subtotal + (subtotal * taxRate) / 100)
+  const subtotal = roundMoney(quantity * unitPrice)
+  return roundMoney(subtotal + calcTaxAmount(quantity, unitPrice, taxRate))
 }
 
 export function calcPaymentProgress(totalAmount: number, balanceDue: number) {

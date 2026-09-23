@@ -3,18 +3,13 @@ export type FxQuote = {
   to: "INR"
   rate: number
   asOf: string
+  requestedOn: string
   source: string
 }
 
 type FrankfurterResponse = {
   date?: string
   base?: string
-  rates?: Record<string, number>
-}
-
-type OpenErResponse = {
-  result?: string
-  time_last_update_utc?: string
   rates?: Record<string, number>
 }
 
@@ -29,65 +24,54 @@ async function fetchJson<T>(url: string): Promise<T> {
   return (await response.json()) as T
 }
 
-async function frankfurterLatest(from: string) {
-  const data = await fetchJson<FrankfurterResponse>(
-    `https://api.frankfurter.dev/v1/latest?base=${encodeURIComponent(from)}&symbols=INR`
-  )
-  const rate = data.rates?.INR
-  if (!rate || !Number.isFinite(rate) || rate <= 0) {
-    throw new Error("Frankfurter did not return a USD/INR rate.")
-  }
-  return {
-    from,
-    to: "INR",
-    rate,
-    asOf: data.date ?? new Date().toISOString().slice(0, 10),
-    source: "frankfurter",
-  } satisfies FxQuote
+function daysBetween(fromIso: string, toIso: string) {
+  const from = Date.parse(`${fromIso}T00:00:00Z`)
+  const to = Date.parse(`${toIso}T00:00:00Z`)
+  if (Number.isNaN(from) || Number.isNaN(to)) return Number.POSITIVE_INFINITY
+  return Math.round((to - from) / 86_400_000)
 }
 
-async function openErRate(from: string) {
-  const data = await fetchJson<OpenErResponse>(
-    `https://open.er-api.com/v6/latest/${encodeURIComponent(from)}`
-  )
-  const rate = data.rates?.INR
-  if (data.result !== "success" || !rate || !Number.isFinite(rate) || rate <= 0) {
-    throw new Error("Fallback FX feed did not return an INR rate.")
-  }
-  const asOf = data.time_last_update_utc
-    ? new Date(data.time_last_update_utc).toISOString().slice(0, 10)
-    : new Date().toISOString().slice(0, 10)
-  return {
-    from,
-    to: "INR",
-    rate,
-    asOf,
-    source: "open.er-api",
-  } satisfies FxQuote
-}
-
-export async function getRateToInr(from: string): Promise<FxQuote | null> {
+export async function getHistoricalRateToInr(
+  from: string,
+  onDate: string
+): Promise<FxQuote | null> {
   const code = from.trim().toUpperCase()
   if (!/^[A-Z]{3}$/.test(code)) return null
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(onDate)) return null
+
   if (code === "INR") {
     return {
       from: "INR",
       to: "INR",
       rate: 1,
-      asOf: new Date().toISOString().slice(0, 10),
+      asOf: onDate,
+      requestedOn: onDate,
       source: "identity",
     }
   }
 
   try {
-    return await openErRate(code)
-  } catch (primary) {
-    console.error("primary FX lookup failed", primary)
-    try {
-      return await frankfurterLatest(code)
-    } catch (fallback) {
-      console.error("fallback FX lookup failed", fallback)
+    const data = await fetchJson<FrankfurterResponse>(
+      `https://api.frankfurter.dev/v1/${onDate}?base=${encodeURIComponent(code)}&symbols=INR`
+    )
+    const rate = data.rates?.INR
+    const asOf = data.date
+    if (!rate || !Number.isFinite(rate) || rate <= 0 || !asOf) {
       return null
     }
+    if (asOf > onDate) return null
+    if (daysBetween(asOf, onDate) > 4) return null
+
+    return {
+      from: code,
+      to: "INR",
+      rate,
+      asOf,
+      requestedOn: onDate,
+      source: "frankfurter",
+    }
+  } catch (error) {
+    console.error("historical FX lookup failed", error)
+    return null
   }
 }

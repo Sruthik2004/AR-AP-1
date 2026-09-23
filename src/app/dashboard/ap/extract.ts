@@ -6,7 +6,7 @@ import { parseInvoiceText, normalizeName } from "@/lib/ap/parse-invoice-text"
 import { readBillText } from "@/lib/ap/read-bill-text"
 import { requireOrgContext } from "@/lib/auth/org"
 import { DEFAULT_CURRENCY, formatINR, formatMoney } from "@/lib/currency"
-import { getRateToInr } from "@/lib/fx"
+import { getHistoricalRateToInr } from "@/lib/fx"
 import { calcLineTotal, roundMoney } from "@/types/bills"
 
 const EXTRACT_MIME = new Set([
@@ -37,17 +37,17 @@ export type ExtractBillResult =
       newVendor: ExtractedVendor | null
       billNumber: string | null
       dueDate: string | null
+      invoiceDate: string | null
+      sourceCurrency: string
+      sourceTotal: number | null
+      fxRate: number | null
+      fxAsOf: string | null
+      inrTotal: number | null
+      needsReview: boolean
       items: ExtractedBillItem[]
       message: string
     }
   | { success: false; error: string }
-
-function addDaysIso(iso: string, days: number) {
-  const date = new Date(`${iso}T00:00:00Z`)
-  if (Number.isNaN(date.getTime())) return null
-  date.setUTCDate(date.getUTCDate() + days)
-  return date.toISOString().slice(0, 10)
-}
 
 function resolveMediaType(file: File) {
   if (EXTRACT_MIME.has(file.type)) return file.type
@@ -138,27 +138,49 @@ export async function extractBillFromUpload(
   const billNumber = extracted.billNumber.trim() || null
   let dueDate = extracted.dueDate
   if (!dueDate && extracted.invoiceDate) {
-    dueDate = addDaysIso(extracted.invoiceDate, 30)
+    dueDate = extracted.invoiceDate
   }
 
   const sourceCurrency = extracted.currency || DEFAULT_CURRENCY
-  let fxNote: string | null = null
-  let amountMultiplier = 1
-
-  if (sourceCurrency !== DEFAULT_CURRENCY) {
-    const quote = await getRateToInr(sourceCurrency)
-    if (!quote) {
-      return {
-        success: false,
-        error: `This bill is in ${sourceCurrency}. An INR exchange rate could not be fetched, so amounts were not posted as rupees. Try the upload again.`,
-      }
-    }
-    amountMultiplier = quote.rate
-    const sourceTotal = extracted.items.reduce(
-      (sum, item) => sum + calcLineTotal(item.quantity, item.unitPrice, item.taxRate),
+  const sourceTotal = roundMoney(
+    extracted.items.reduce(
+      (sum, item) =>
+        sum + calcLineTotal(item.quantity, item.unitPrice, item.taxRate),
       0
     )
-    fxNote = `Bill is ${sourceCurrency}. Converted ${formatMoney(sourceTotal, sourceCurrency)} at today's rate of ${formatINR(quote.rate)} per ${sourceCurrency} (${quote.asOf}) → ${formatINR(roundMoney(sourceTotal * quote.rate))}.`
+  )
+  let fxNote: string | null = null
+  let amountMultiplier = 1
+  let needsReview = false
+  let fxRate: number | null = null
+  let fxAsOf: string | null = null
+  let inrTotal: number | null =
+    sourceCurrency === DEFAULT_CURRENCY ? sourceTotal : null
+
+  if (sourceCurrency !== DEFAULT_CURRENCY) {
+    if (!extracted.invoiceDateVerified || !extracted.invoiceDate) {
+      needsReview = true
+      fxNote = `Needs review: OCR could not verify the invoice date, so ${sourceCurrency} was not converted to INR.`
+    } else {
+      const quote = await getHistoricalRateToInr(
+        sourceCurrency,
+        extracted.invoiceDate
+      )
+      if (!quote) {
+        needsReview = true
+        fxNote = `Needs review: no ${sourceCurrency}-to-INR rate for invoice date ${extracted.invoiceDate}. Amounts were not converted.`
+      } else {
+        amountMultiplier = quote.rate
+        fxRate = quote.rate
+        fxAsOf = quote.asOf
+        inrTotal = roundMoney(sourceTotal * quote.rate)
+        const rateDate =
+          quote.asOf === extracted.invoiceDate
+            ? extracted.invoiceDate
+            : `${extracted.invoiceDate}, market rate ${quote.asOf}`
+        fxNote = `Bill is ${sourceCurrency}. Converted ${formatMoney(sourceTotal, sourceCurrency)} at ${formatINR(quote.rate)} per ${sourceCurrency} (${rateDate}) → ${formatINR(inrTotal)}.`
+      }
+    }
   }
 
   const items = extracted.items
@@ -170,7 +192,11 @@ export async function extractBillFromUpload(
       return {
         description,
         quantity: String(Math.max(1, Math.round(item.quantity) || 1)),
-        unit_price: String(roundMoney(item.unitPrice * amountMultiplier)),
+        unit_price: String(
+          needsReview
+            ? item.unitPrice
+            : roundMoney(item.unitPrice * amountMultiplier)
+        ),
         tax_rate: String(item.taxRate),
       } satisfies ExtractedBillItem
     })
@@ -252,9 +278,18 @@ export async function extractBillFromUpload(
     newVendor,
     billNumber,
     dueDate,
+    invoiceDate: extracted.invoiceDate,
+    sourceCurrency,
+    sourceTotal: extracted.items.length ? sourceTotal : null,
+    fxRate,
+    fxAsOf,
+    inrTotal,
+    needsReview,
     items,
-    message: filled.length
-      ? `${fxNote ? `${fxNote} ` : ""}Filled ${filled.join(", ")} from OCR. Review before submitting.`
-      : "The file is attached, but OCR could not find bill details. Enter them manually.",
+    message: needsReview
+      ? `${fxNote ?? "Needs review."} Vendor, bill number, due date, and line items were filled from OCR. Convert to INR after review — do not submit unconverted amounts.`
+      : filled.length
+        ? `${fxNote ? `${fxNote} ` : ""}Filled ${filled.join(", ")} from OCR. Review before submitting.`
+        : "The file is attached, but OCR could not find bill details. Enter them manually.",
   }
 }

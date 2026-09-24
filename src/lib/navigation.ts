@@ -4,6 +4,7 @@ import {
   Wallet,
   ClipboardCheck,
   Users,
+  BookOpen,
   ScrollText,
   type LucideIcon,
 } from "lucide-react"
@@ -45,6 +46,12 @@ export const mainNavItems: NavItem[] = [
     href: "/dashboard/contacts",
     icon: Users,
     description: "Vendors, clients, and directories",
+  },
+  {
+    title: "Accounting",
+    href: "/dashboard/accounting",
+    icon: BookOpen,
+    description: "Ledger, journals, and financial statements",
   },
   {
     title: "Audit Logs",

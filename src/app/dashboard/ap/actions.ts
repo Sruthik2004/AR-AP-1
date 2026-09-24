@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 
+import { postVendorBillJournal } from "@/lib/accounting/post"
 import { canApproveBills, requireOrgContext } from "@/lib/auth/org"
 import {
   BILL_APPROVAL_THRESHOLD,
@@ -210,6 +211,22 @@ export async function createBill(formData: FormData): Promise<ActionResult> {
     }
   }
 
+  if (status === "approved") {
+    const posted = await postVendorBillJournal(supabase, orgId, {
+      billId: bill.id,
+      billNumber: bill_number,
+      items,
+      total: total_amount,
+    })
+    if (!posted.ok) {
+      await supabase.from("bills").delete().eq("id", bill.id)
+      if (attachment_path) {
+        await supabase.storage.from("vendor-invoices").remove([attachment_path])
+      }
+      return { success: false, error: posted.error }
+    }
+  }
+
   await supabase.from("audit_logs").insert({
     org_id: orgId,
     user_id: userId,
@@ -271,7 +288,7 @@ export async function decideBillApproval(input: {
 
   const { data: bill, error: billError } = await supabase
     .from("bills")
-    .select("id, org_id, status, total_amount, balance_due")
+    .select("id, org_id, status, total_amount, balance_due, bill_number")
     .eq("id", bill_id)
     .maybeSingle()
 
@@ -325,6 +342,44 @@ export async function decideBillApproval(input: {
     return {
       success: false,
       error: approvalError?.message ?? "Failed to write approval log.",
+    }
+  }
+
+  if (decision === "approved") {
+    const { data: billItems, error: billItemsError } = await supabase
+      .from("bill_items")
+      .select("quantity, unit_price")
+      .eq("bill_id", bill_id)
+
+    if (billItemsError || !billItems?.length) {
+      await supabase.from("approval_logs").delete().eq("id", approval.id)
+      await supabase
+        .from("bills")
+        .update({ status: "pending_approval" })
+        .eq("id", bill_id)
+      return {
+        success: false,
+        error: billItemsError?.message ?? "Bill has no lines to post.",
+      }
+    }
+
+    const posted = await postVendorBillJournal(supabase, orgId, {
+      billId: bill_id,
+      billNumber: bill.bill_number as string,
+      items: billItems.map((item) => ({
+        quantity: Number(item.quantity),
+        unit_price: Number(item.unit_price),
+      })),
+      total: Number(bill.total_amount),
+    })
+
+    if (!posted.ok) {
+      await supabase.from("approval_logs").delete().eq("id", approval.id)
+      await supabase
+        .from("bills")
+        .update({ status: "pending_approval" })
+        .eq("id", bill_id)
+      return { success: false, error: posted.error }
     }
   }
 

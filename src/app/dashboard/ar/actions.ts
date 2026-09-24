@@ -2,6 +2,10 @@
 
 import { revalidatePath } from "next/cache"
 
+import {
+  postCustomerInvoiceJournal,
+  postCustomerReceiptJournal,
+} from "@/lib/accounting/post"
 import { requireOrgContext } from "@/lib/auth/org"
 import {
   calcLineTotal,
@@ -152,6 +156,20 @@ export async function createInvoice(
     }
   }
 
+  if (status === "sent") {
+    const posted = await postCustomerInvoiceJournal(supabase, orgId, {
+      invoiceId: invoice.id,
+      invoiceNumber: invoice_number,
+      issueDate: issue_date,
+      items,
+      total: total_amount,
+    })
+    if (!posted.ok) {
+      await supabase.from("invoices").delete().eq("id", invoice.id)
+      return { success: false, error: posted.error }
+    }
+  }
+
   await supabase.from("audit_logs").insert({
     org_id: orgId,
     user_id: userId,
@@ -207,7 +225,7 @@ export async function recordInvoicePayment(
 
   const { data: invoice, error: invoiceError } = await supabase
     .from("invoices")
-    .select("id, org_id, total_amount, balance_due, status")
+    .select("id, org_id, invoice_number, total_amount, balance_due, status")
     .eq("id", invoice_id)
     .maybeSingle()
 
@@ -274,10 +292,31 @@ export async function recordInvoicePayment(
     .eq("id", invoice_id)
 
   if (updateError) {
+    await supabase.from("payments").delete().eq("id", payment.id)
     return {
       success: false,
       error: updateError.message ?? "Payment saved, but invoice update failed.",
     }
+  }
+
+  const paidOn = /^\d{4}-\d{2}-\d{2}/.test(paid_at)
+    ? paid_at.slice(0, 10)
+    : new Date(paid_at).toISOString().slice(0, 10)
+
+  const posted = await postCustomerReceiptJournal(supabase, orgId, {
+    paymentId: payment.id,
+    invoiceNumber: String(invoice.invoice_number),
+    amount,
+    paidOn,
+  })
+
+  if (!posted.ok) {
+    await supabase
+      .from("invoices")
+      .update({ balance_due: currentBalance, status: previousStatus })
+      .eq("id", invoice_id)
+    await supabase.from("payments").delete().eq("id", payment.id)
+    return { success: false, error: posted.error }
   }
 
   await supabase.from("audit_logs").insert({

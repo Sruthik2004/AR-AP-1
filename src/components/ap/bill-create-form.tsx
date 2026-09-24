@@ -484,8 +484,9 @@ export function BillCreateForm({
                   <TableCell>
                     <Input
                       type="number"
-                      min={0.0001}
-                      step="0.01"
+                      min="0.0001"
+                      step="any"
+                      inputMode="decimal"
                       value={line.quantity}
                       onChange={(event) =>
                         updateLine(line.key, { quantity: event.target.value })

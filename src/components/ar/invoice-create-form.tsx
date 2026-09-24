@@ -3,9 +3,10 @@
 import * as React from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { Loader2, Plus, Trash2 } from "lucide-react"
+import { Loader2, Plus, Trash2, Upload } from "lucide-react"
 
 import { createInvoice } from "@/app/dashboard/ar/actions"
+import { extractInvoiceFromUpload } from "@/app/dashboard/ar/extract"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -24,7 +25,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { formatINR } from "@/lib/currency"
+import { formatINR, formatMoney } from "@/lib/currency"
 import {
   GST_TAX_RATES,
   calcLineTotal,
@@ -94,12 +95,31 @@ export function InvoiceCreateForm({
   const router = useRouter()
   const [pending, setPending] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
+  const [customerOptions, setCustomerOptions] = React.useState(customers)
   const [customerId, setCustomerId] = React.useState("")
   const [status, setStatus] = React.useState<"draft" | "sent">("sent")
   const [invoiceNumber, setInvoiceNumber] = React.useState(suggestInvoiceNumber)
   const [issueDate, setIssueDate] = React.useState(todayInputValue)
   const [dueDate, setDueDate] = React.useState(() => addDaysInputValue(30))
+  const [extracting, setExtracting] = React.useState(false)
+  const [extractNote, setExtractNote] = React.useState<string | null>(null)
+  const [extractFailed, setExtractFailed] = React.useState(false)
+  const [needsReview, setNeedsReview] = React.useState(false)
+  const [fxSummary, setFxSummary] = React.useState<{
+    invoiceDate: string
+    sourceCurrency: string
+    sourceTotal: number
+    fxRate: number
+    inrTotal: number
+  } | null>(null)
+  const extractGen = React.useRef(0)
   const [lines, setLines] = React.useState<LineItemDraft[]>([createEmptyLine()])
+
+  React.useEffect(() => {
+    setCustomerOptions(customers)
+  }, [customers])
+
+  const busy = pending || extracting
 
   const computedLines = lines.map((line) => {
     const quantity = Number.parseInt(line.quantity, 10) || 0
@@ -129,6 +149,80 @@ export function InvoiceCreateForm({
     setLines((prev) =>
       prev.length === 1 ? prev : prev.filter((line) => line.key !== key)
     )
+  }
+
+  async function onAttachmentChange(file: File | null) {
+    const gen = ++extractGen.current
+    setExtractNote(null)
+    setExtractFailed(false)
+    setNeedsReview(false)
+    setFxSummary(null)
+    if (!file) return
+
+    setExtracting(true)
+    try {
+      const formData = new FormData()
+      formData.set("attachment", file)
+      const result = await extractInvoiceFromUpload(formData)
+      if (gen !== extractGen.current) return
+
+      if (!result.success) {
+        setExtractFailed(true)
+        setExtractNote(result.error)
+        return
+      }
+
+      setNeedsReview(result.needsReview)
+      if (
+        !result.needsReview &&
+        result.issueDate &&
+        result.fxRate &&
+        result.sourceTotal != null &&
+        result.inrTotal != null
+      ) {
+        setFxSummary({
+          invoiceDate: result.issueDate,
+          sourceCurrency: result.sourceCurrency,
+          sourceTotal: result.sourceTotal,
+          fxRate: result.fxRate,
+          inrTotal: result.inrTotal,
+        })
+      }
+
+      if (result.newCustomer) {
+        const created = result.newCustomer
+        setCustomerOptions((prev) => {
+          if (prev.some((customer) => customer.id === created.id)) return prev
+          return [...prev, { ...created, email: created.email }].sort((a, b) =>
+            a.name.localeCompare(b.name)
+          )
+        })
+      }
+      if (result.customerId) setCustomerId(result.customerId)
+      if (result.invoiceNumber) setInvoiceNumber(result.invoiceNumber)
+      if (result.issueDate) setIssueDate(result.issueDate)
+      if (result.dueDate) setDueDate(result.dueDate)
+      if (result.items.length > 0) {
+        setLines(
+          result.items.map((item) => ({
+            key: crypto.randomUUID(),
+            description: item.description,
+            quantity: item.quantity,
+            unit_price: item.unit_price,
+            tax_rate: item.tax_rate,
+          }))
+        )
+      }
+      setExtractNote(result.message)
+    } catch {
+      if (gen !== extractGen.current) return
+      setExtractFailed(true)
+      setExtractNote(
+        "Could not read this invoice automatically. Fill customer, dates, and items by hand."
+      )
+    } finally {
+      if (gen === extractGen.current) setExtracting(false)
+    }
   }
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -179,13 +273,13 @@ export function InvoiceCreateForm({
             onValueChange={(value) => {
               if (value) setCustomerId(value)
             }}
-            disabled={pending || customers.length === 0}
+            disabled={busy || customerOptions.length === 0}
           >
             <SelectTrigger id="customer_id" className="w-full">
               <SelectValue placeholder="Select customer" />
             </SelectTrigger>
             <SelectContent>
-              {customers.map((customer) => (
+              {customerOptions.map((customer) => (
                 <SelectItem key={customer.id} value={customer.id}>
                   {customer.name}
                   {customer.email ? ` · ${customer.email}` : ""}
@@ -193,7 +287,7 @@ export function InvoiceCreateForm({
               ))}
             </SelectContent>
           </Select>
-          {customers.length === 0 ? (
+          {customerOptions.length === 0 ? (
             <p className="text-xs text-muted-foreground">
               No customers found.{" "}
               <Link
@@ -214,7 +308,7 @@ export function InvoiceCreateForm({
             value={invoiceNumber}
             onChange={(event) => setInvoiceNumber(event.target.value)}
             required
-            disabled={pending}
+            disabled={busy}
           />
         </div>
 
@@ -225,7 +319,7 @@ export function InvoiceCreateForm({
             onValueChange={(value) => {
               if (value === "draft" || value === "sent") setStatus(value)
             }}
-            disabled={pending}
+            disabled={busy}
           >
             <SelectTrigger id="status" className="w-full">
               <SelectValue />
@@ -245,7 +339,7 @@ export function InvoiceCreateForm({
             value={issueDate}
             onChange={(event) => setIssueDate(event.target.value)}
             required
-            disabled={pending}
+            disabled={busy}
           />
         </div>
 
@@ -257,8 +351,56 @@ export function InvoiceCreateForm({
             value={dueDate}
             onChange={(event) => setDueDate(event.target.value)}
             required
-            disabled={pending}
+            disabled={busy}
           />
+        </div>
+
+        <div className="space-y-2 md:col-span-2 xl:col-span-4">
+          <Label htmlFor="invoice-upload">Customer invoice upload</Label>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <Input
+              id="invoice-upload"
+              type="file"
+              accept=".pdf,.png,.jpg,.jpeg,.webp,application/pdf,image/*"
+              disabled={busy}
+              onChange={(event) =>
+                void onAttachmentChange(event.target.files?.[0] ?? null)
+              }
+            />
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Upload className="size-3.5" />
+              OCR reads the customer, dates, items, and total · max 10MB
+            </div>
+          </div>
+          {extracting ? (
+            <p className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin" />
+              Running OCR on customer, invoice number, dates, items, and total…
+            </p>
+          ) : extractNote ? (
+            <p
+              className={
+                extractFailed || needsReview
+                  ? "text-sm text-amber-800 dark:text-amber-200"
+                  : "text-sm text-muted-foreground"
+              }
+            >
+              {extractNote}
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Upload a PDF or photo. OCR fills the customer, invoice number,
+              issue date, due date, and line items. Review them before creating
+              the invoice.
+            </p>
+          )}
+          {fxSummary ? (
+            <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm tabular-nums">
+              {formatMoney(fxSummary.sourceTotal, fxSummary.sourceCurrency)} ×{" "}
+              {formatINR(fxSummary.fxRate)} per {fxSummary.sourceCurrency} on{" "}
+              {fxSummary.invoiceDate} = {formatINR(fxSummary.inrTotal)}
+            </p>
+          ) : null}
         </div>
       </div>
 
@@ -274,7 +416,7 @@ export function InvoiceCreateForm({
             type="button"
             variant="outline"
             size="sm"
-            disabled={pending}
+            disabled={busy}
             onClick={() => setLines((prev) => [...prev, createEmptyLine()])}
           >
             <Plus />
@@ -307,7 +449,7 @@ export function InvoiceCreateForm({
                       }
                       placeholder="Consulting / product / service"
                       required
-                      disabled={pending}
+                      disabled={busy}
                     />
                   </TableCell>
                   <TableCell>
@@ -323,7 +465,7 @@ export function InvoiceCreateForm({
                         })
                       }
                       required
-                      disabled={pending}
+                      disabled={busy}
                     />
                   </TableCell>
                   <TableCell>
@@ -338,7 +480,7 @@ export function InvoiceCreateForm({
                         })
                       }
                       required
-                      disabled={pending}
+                      disabled={busy}
                     />
                   </TableCell>
                   <TableCell>
@@ -347,7 +489,7 @@ export function InvoiceCreateForm({
                       onValueChange={(value) => {
                         if (value) updateLine(line.key, { tax_rate: value })
                       }}
-                      disabled={pending}
+                      disabled={busy}
                     >
                       <SelectTrigger className="w-full">
                         <SelectValue />
@@ -369,7 +511,7 @@ export function InvoiceCreateForm({
                       type="button"
                       variant="ghost"
                       size="icon-sm"
-                      disabled={pending || lines.length === 1}
+                      disabled={busy || lines.length === 1}
                       onClick={() => removeLine(line.key)}
                       aria-label="Remove line"
                     >
@@ -398,6 +540,14 @@ export function InvoiceCreateForm({
         </div>
       </div>
 
+      {needsReview ? (
+        <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
+          Review required: the invoice date or exchange rate could not be
+          confirmed, so amounts were not converted. Check the OCR values before
+          creating the invoice.
+        </p>
+      ) : null}
+
       {error ? (
         <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}
@@ -405,10 +555,10 @@ export function InvoiceCreateForm({
       ) : null}
 
       <div className="flex flex-wrap items-center justify-end gap-2">
-        <Button type="button" variant="outline" asChild disabled={pending}>
+        <Button type="button" variant="outline" asChild disabled={busy}>
           <Link href="/dashboard/ar">Cancel</Link>
         </Button>
-        <Button type="submit" disabled={pending || customers.length === 0}>
+        <Button type="submit" disabled={busy || customerOptions.length === 0 || !customerId}>
           {pending ? (
             <>
               <Loader2 className="animate-spin" />

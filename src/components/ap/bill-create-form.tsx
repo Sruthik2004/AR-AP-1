@@ -96,6 +96,7 @@ export function BillCreateForm({
   const [extractNote, setExtractNote] = React.useState<string | null>(null)
   const [extractFailed, setExtractFailed] = React.useState(false)
   const [needsReview, setNeedsReview] = React.useState(false)
+  const [blockSubmit, setBlockSubmit] = React.useState(false)
   const [fxSummary, setFxSummary] = React.useState<{
     invoiceDate: string
     sourceCurrency: string
@@ -156,6 +157,7 @@ export function BillCreateForm({
     setExtractNote(null)
     setExtractFailed(false)
     setNeedsReview(false)
+    setBlockSubmit(false)
     setFxSummary(null)
     if (!file) return
 
@@ -173,6 +175,7 @@ export function BillCreateForm({
       }
 
       setNeedsReview(result.needsReview)
+      setBlockSubmit(result.blockSubmit)
       if (
         !result.needsReview &&
         result.invoiceDate &&
@@ -569,7 +572,7 @@ export function BillCreateForm({
         </p>
       </div>
 
-      {needsReview ? (
+      {needsReview && !blockSubmit ? (
         <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
           Review required: the invoice date or historical USD-to-INR rate could
           not be confirmed, so amounts were not converted. Check OCR values
@@ -590,13 +593,13 @@ export function BillCreateForm({
         <Button
           type="button"
           variant="secondary"
-          disabled={busy || vendorOptions.length === 0}
+          disabled={busy || blockSubmit || vendorOptions.length === 0}
           onClick={() => void submit(true)}
         >
           {pending ? <Loader2 className="animate-spin" /> : null}
           Save draft
         </Button>
-        <Button type="submit" disabled={busy || vendorOptions.length === 0}>
+        <Button type="submit" disabled={busy || blockSubmit || vendorOptions.length === 0}>
           {pending ? (
             <>
               <Loader2 className="animate-spin" />

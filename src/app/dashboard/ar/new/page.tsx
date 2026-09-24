@@ -14,7 +14,7 @@ export default async function NewInvoicePage() {
   return (
     <PageShell
       title="Create invoice"
-      description="Build a multi-line customer invoice with GST and automatic totals."
+      description="Upload a customer invoice. OCR fills the customer, dates, items, and total. Review before creating."
     >
       <InvoiceCreateForm customers={customers} customersError={error} />
     </PageShell>

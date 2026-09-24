@@ -12,11 +12,21 @@ export type ParsedInvoice = {
   vendorEmail: string
   vendorPhone: string
   vendorTaxId: string
+  customerName: string
+  customerEmail: string
+  customerPhone: string
+  customerTaxId: string
   billNumber: string
   invoiceDate: string | null
   invoiceDateVerified: boolean
   dueDate: string | null
   currency: string
+  subtotal: number | null
+  totalGst: number | null
+  grandTotal: number | null
+  confidence: number
+  requiresReview: boolean
+  reviewReason: string
   items: ParsedInvoiceItem[]
 }
 
@@ -141,10 +151,41 @@ function firstGstin(text: string) {
   ).toUpperCase()
 }
 
+const BUYER_LABEL =
+  /consignee|bill\s*to|billed\s*to|buyer\s*\(|buyer \(bill|details of (?:receiver|buyer|recipient)|customer\s*name|ship\s*to|place\s*of\s*supply/i
+
 function sellerSection(text: string) {
-  return text.split(
-    /consignee|bill\s*to|billed\s*to|buyer\s*\(|buyer \(bill|details of (?:receiver|buyer|recipient)|customer\s*name|ship\s*to|place\s*of\s*supply/i
-  )[0]
+  return text.split(BUYER_LABEL)[0]
+}
+
+function buyerSection(text: string) {
+  const match = text.match(BUYER_LABEL)
+  if (!match || match.index == null) return ""
+  const rest = text.slice(match.index + match[0].length)
+  const end = rest.search(
+    /\n\s*(?:invoice\s*(?:no|num(?:ber)?|#)|description of (?:goods|services)|particulars|hsn\/?sac|s\.?\s*no\b|sl\.?\s*no|amount chargeable|taxable value)/i
+  )
+  return (end >= 0 ? rest.slice(0, end) : rest.slice(0, 600)).trim()
+}
+
+function findKnownParty(text: string, parties: KnownVendor[]) {
+  const normalized = normalizeName(text)
+  return parties
+    .filter((party) => {
+      const current = normalizeName(party.name)
+      return current.length >= 3 && normalized.includes(current)
+    })
+    .sort(
+      (a, b) => normalizeName(b.name).length - normalizeName(a.name).length
+    )[0]?.name ?? ""
+}
+
+function isDifferentParty(name: string, other: string) {
+  const left = normalizeName(name)
+  const right = normalizeName(other)
+  if (left.length < 3) return false
+  if (!right) return true
+  return left !== right && !left.includes(right) && !right.includes(left)
 }
 
 function isBoilerplateLine(line: string) {
@@ -176,7 +217,7 @@ function findVendorName(text: string, knownVendors: KnownVendor[]) {
 
   const labeled = labeledValue(
     seller,
-    /(?:supplier|seller|vendor|from|billed\s*by|tax\s*invoice\s*from)[:\s]+([^\n]{3,80})/i
+    /(?:supplier|seller|vendor|from|billed\s*by|tax\s*invoice\s*from|(?:^|\n)\s*for)[:\s]+([^\n]{3,80})/i
   )
   if (
     labeled &&
@@ -210,6 +251,66 @@ function findVendorName(text: string, knownVendors: KnownVendor[]) {
         !/invoice|date|phone|email|address|gstin/i.test(line)
     ) ?? ""
   )
+}
+
+function partyNameFromSection(section: string) {
+  const labeled = labeledValue(
+    section,
+    /(?:customer|client|buyer|consignee|bill\s*to|billed\s*to)[:\s]+([^\n]{3,80})/i
+  )
+  if (
+    labeled &&
+    !/tax\s*invoice|original|duplicate/i.test(labeled) &&
+    !isAddressLike(labeled)
+  ) {
+    return labeled.replace(/\s+/g, " ").trim()
+  }
+
+  const lines = section
+    .split(/\n+/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+
+  const company = lines.find(
+    (line) =>
+      companyLike(line) &&
+      !isBoilerplateLine(line) &&
+      !isAddressLike(line) &&
+      !/invoice\s*no/i.test(line)
+  )
+  if (company) return company
+
+  return (
+    lines.find(
+      (line) =>
+        line.length >= 4 &&
+        line.length <= 80 &&
+        !isBoilerplateLine(line) &&
+        !isAddressLike(line) &&
+        !/invoice|date|phone|email|address|gstin/i.test(line)
+    ) ?? ""
+  )
+}
+
+function findCustomerName(
+  text: string,
+  knownCustomers: KnownVendor[],
+  sellerName: string
+) {
+  const buyer = buyerSection(text)
+  if (buyer) {
+    const known = findKnownParty(buyer, knownCustomers)
+    if (known && isDifferentParty(known, sellerName)) return known
+
+    const named = partyNameFromSection(buyer)
+    if (named && isDifferentParty(named, sellerName)) return named
+  }
+
+  const knownAnywhere = findKnownParty(text, knownCustomers)
+  if (knownAnywhere && isDifferentParty(knownAnywhere, sellerName)) {
+    return knownAnywhere
+  }
+  return ""
 }
 
 function detectCurrency(text: string) {
@@ -428,7 +529,97 @@ function isContinuationLine(line: string) {
   )
 }
 
+function round2(value: number) {
+  return Math.round((value + Number.EPSILON) * 100) / 100
+}
+
+function readInvoiceSummary(text: string) {
+  const amount = (pattern: RegExp) => {
+    const raw = text.match(pattern)?.[1]
+    return raw ? parseMoney(raw) : null
+  }
+  const subtotal = amount(/sub\s*total[^\d]{0,12}([\d,]+\.\d{2})/i)
+  const sgst = amount(/\bsgst\s*@?\s*[\d.]+%\s*₹?\s*([\d,]+\.\d{2})/i)
+  const cgst = amount(/\bcgst\s*@?\s*[\d.]+%\s*₹?\s*([\d,]+\.\d{2})/i)
+  const igst = amount(/\bigst\s*@?\s*[\d.]+%\s*₹?\s*([\d,]+\.\d{2})/i)
+  const grand = amount(
+    /(?:sgst|cgst|igst)@[^\n]*\n\s*total[^\d]{0,12}([\d,]+\.\d{2})/i
+  )
+  const totalGst =
+    sgst == null && cgst == null && igst == null
+      ? null
+      : round2((sgst ?? 0) + (cgst ?? 0) + (igst ?? 0))
+  return { subtotal, totalGst, grand }
+}
+
+function gstForBase(base: number, taxRate: number) {
+  if (taxRate <= 0) return 0
+  if (taxRate % 2 === 0) {
+    const half = round2((base * (taxRate / 2)) / 100)
+    return round2(half * 2)
+  }
+  return round2((base * taxRate) / 100)
+}
+
+/** Unit price and GST are separate columns. The smaller trailing amount is GST, never the rate. */
+function parseVyaparItems(text: string): ParsedInvoiceItem[] {
+  const lines = text
+    .split(/\n+/)
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean)
+  const items: ParsedInvoiceItem[] = []
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const row = lines[index].match(
+      /^(\d{1,3})\s+(.+?)\s+(\d+(?:\.\d+)?)\s+(?:-|sqf|nos|pcs|pc|unt|units?|kg|mtr|box|set|qty)\s+₹\s*([\d,]+\.\d{2})\s+₹\s*([\d,]+\.\d{2})$/i
+    )
+    if (!row) continue
+
+    const description = row[2].replace(/\s+/g, " ").trim()
+    const quantity = Number(row[3])
+    const unitPrice = parseMoney(row[4])
+    const gstAmount = parseMoney(row[5])
+    const rateLine = lines[index + 1]?.match(
+      /^\((\d+(?:\.\d+)?)%\)\s*₹\s*([\d,]+\.\d{2})$/i
+    )
+    const statedTotal = rateLine ? parseMoney(rateLine[2]) : null
+    if (
+      !unitPrice ||
+      !gstAmount ||
+      gstAmount >= unitPrice ||
+      !hasProductName(description) ||
+      !Number.isFinite(quantity) ||
+      quantity <= 0
+    ) {
+      continue
+    }
+
+    const base = round2(quantity * unitPrice)
+    if (statedTotal != null && Math.abs(round2(base + gstAmount) - statedTotal) > 1) {
+      continue
+    }
+
+    const taxRate = rateLine
+      ? nearestGst(Number(rateLine[1]))
+      : nearestGst((gstAmount / base) * 100)
+    if (Math.abs(gstForBase(base, taxRate) - gstAmount) > 1) continue
+
+    items.push({
+      description,
+      quantity: Math.max(1, Math.round(quantity) || 1),
+      unitPrice,
+      taxRate,
+    })
+    if (rateLine) index += 1
+  }
+
+  return items
+}
+
 function parseLineItems(text: string, taxRate: number): ParsedInvoiceItem[] {
+  const priced = parseVyaparItems(text)
+  if (priced.length) return priced
+
   const lines = text
     .split(/\n+/)
     .map((line) => line.replace(/\s+/g, " ").trim())
@@ -485,15 +676,25 @@ function parseLineItems(text: string, taxRate: number): ParsedInvoiceItem[] {
 
 export function parseInvoiceText(
   text: string,
-  options?: { fileName?: string; knownVendors?: KnownVendor[] }
+  options?: {
+    fileName?: string
+    knownVendors?: KnownVendor[]
+    knownCustomers?: KnownVendor[]
+  }
 ): ParsedInvoice {
   const cleaned = text.replace(/\u00a0/g, " ").replace(/[ \t]+/g, " ")
   const seller = sellerSection(cleaned)
+  const buyer = buyerSection(cleaned)
+  const vendorName = findVendorName(cleaned, options?.knownVendors ?? [])
   const labeledInvoiceDate = findLabeledDate(
     cleaned,
     /(?:invoice\s*date|bill\s*date|date\s*of\s*invoice|inv\.?\s*date|dated)[:\s]+([0-9A-Za-z/.\- ,]{6,20})/i
   )
-  const invoiceDate = labeledInvoiceDate
+  const bareDate = findLabeledDate(
+    cleaned,
+    /(?:^|\n)\s*Date[:\s]+([0-9]{1,2}[\/.\-][0-9]{1,2}[\/.\-][0-9]{2,4})/i
+  )
+  const invoiceDate = labeledInvoiceDate ?? bareDate
   const taxRate = documentGst(cleaned)
 
   let dueDate = findLabeledDate(
@@ -510,16 +711,73 @@ export function parseInvoiceText(
     dueDate = invoiceDate
   }
 
+  const summary = readInvoiceSummary(cleaned)
+  let items = parseLineItems(cleaned, taxRate)
+  const lineSubtotal = round2(
+    items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0)
+  )
+  const lineGst = round2(
+    items.reduce(
+      (sum, item) => sum + gstForBase(item.quantity * item.unitPrice, item.taxRate),
+      0
+    )
+  )
+  const lineGrand = round2(lineSubtotal + lineGst)
+  const reasons: string[] = []
+  if (summary.subtotal != null && Math.abs(lineSubtotal - summary.subtotal) > 1) {
+    reasons.push(
+      `Line subtotal ${lineSubtotal} does not match invoice subtotal ${summary.subtotal}`
+    )
+  }
+  if (summary.totalGst != null && Math.abs(lineGst - summary.totalGst) > 1) {
+    reasons.push(
+      `Line GST ${lineGst} does not match invoice GST ${summary.totalGst}`
+    )
+  }
+  if (summary.grand != null && Math.abs(lineGrand - summary.grand) > 1) {
+    reasons.push(
+      `Calculated total ${lineGrand} does not match invoice total ${summary.grand}`
+    )
+  }
+  const gstUsedAsPrice = items.some((item) => {
+    const gst = gstForBase(item.quantity * item.unitPrice, item.taxRate)
+    return gst > 0 && Math.abs(item.unitPrice - gst) <= 1 && item.unitPrice < lineGrand
+  })
+  if (gstUsedAsPrice) {
+    reasons.push("GST amount was read as the unit price")
+  }
+  if (reasons.length) items = []
+
+  let confidence = items.length ? 92 : 50
+  if (items.length && reasons.length === 0 && summary.grand != null) confidence = 98
+  else if (items.length && summary.grand == null) confidence = 90
+  if (!invoiceDate) confidence = Math.min(confidence, 80)
+  const requiresReview = reasons.length > 0 || confidence < 95
+
   return {
-    vendorName: findVendorName(cleaned, options?.knownVendors ?? []),
+    vendorName,
     vendorEmail: firstEmail(seller) || firstEmail(cleaned),
     vendorPhone: firstPhone(seller) || firstPhone(cleaned),
     vendorTaxId: firstGstin(seller) || firstGstin(cleaned),
+    customerName: findCustomerName(
+      cleaned,
+      options?.knownCustomers ?? [],
+      vendorName
+    ),
+    customerEmail: firstEmail(buyer),
+    customerPhone: firstPhone(buyer),
+    customerTaxId: firstGstin(buyer),
     billNumber: findBillNumber(cleaned, options?.fileName),
     invoiceDate,
-    invoiceDateVerified: Boolean(labeledInvoiceDate),
+    invoiceDateVerified: Boolean(invoiceDate),
     dueDate,
     currency: detectCurrency(cleaned),
-    items: parseLineItems(cleaned, taxRate),
+    subtotal: summary.subtotal ?? (items.length ? lineSubtotal : null),
+    totalGst: summary.totalGst ?? (items.length ? lineGst : null),
+    grandTotal: summary.grand ?? (items.length ? lineGrand : null),
+    confidence,
+    requiresReview,
+    reviewReason: reasons.join(". "),
+    items,
   }
 }

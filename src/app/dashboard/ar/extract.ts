@@ -7,7 +7,7 @@ import { readBillText } from "@/lib/ap/read-bill-text"
 import { requireOrgContext } from "@/lib/auth/org"
 import { DEFAULT_CURRENCY, formatINR, formatMoney } from "@/lib/currency"
 import { getHistoricalRateToInr } from "@/lib/fx"
-import { calcLineTotal, roundMoney } from "@/types/bills"
+import { calcLineTotal, roundMoney } from "@/types/invoices"
 
 const EXTRACT_MIME = new Set([
   "application/pdf",
@@ -16,36 +16,35 @@ const EXTRACT_MIME = new Set([
   "image/webp",
 ])
 
-export type ExtractedBillItem = {
+export type ExtractedInvoiceItem = {
   description: string
   quantity: string
   unit_price: string
   tax_rate: string
 }
 
-export type ExtractedVendor = {
+export type ExtractedCustomer = {
   id: string
   name: string
   email: string
   currency: string
 }
 
-export type ExtractBillResult =
+export type ExtractInvoiceResult =
   | {
       success: true
-      vendorId: string | null
-      newVendor: ExtractedVendor | null
-      billNumber: string | null
+      customerId: string | null
+      newCustomer: ExtractedCustomer | null
+      invoiceNumber: string | null
+      issueDate: string | null
       dueDate: string | null
-      invoiceDate: string | null
       sourceCurrency: string
       sourceTotal: number | null
       fxRate: number | null
       fxAsOf: string | null
       inrTotal: number | null
       needsReview: boolean
-      blockSubmit: boolean
-      items: ExtractedBillItem[]
+      items: ExtractedInvoiceItem[]
       message: string
     }
   | { success: false; error: string }
@@ -60,19 +59,26 @@ function resolveMediaType(file: File) {
   return file.type || "application/octet-stream"
 }
 
-function vendorPlaceholderEmail(name: string) {
+function customerPlaceholderEmail(name: string) {
   const slug =
     name
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "")
-      .slice(0, 40) || "vendor"
-  return `${slug}@vendors.sbcllp.in`
+      .slice(0, 40) || "customer"
+  return `${slug}@customers.sbcllp.in`
 }
 
-export async function extractBillFromUpload(
+function addDaysIso(iso: string, days: number) {
+  const date = new Date(`${iso}T00:00:00Z`)
+  if (Number.isNaN(date.getTime())) return iso
+  date.setUTCDate(date.getUTCDate() + days)
+  return date.toISOString().slice(0, 10)
+}
+
+export async function extractInvoiceFromUpload(
   formData: FormData
-): Promise<ExtractBillResult> {
+): Promise<ExtractInvoiceResult> {
   const auth = await requireOrgContext()
   if (!auth.ok) return { success: false, error: auth.error }
 
@@ -80,7 +86,7 @@ export async function extractBillFromUpload(
   const file = formData.get("attachment")
 
   if (!(file instanceof File) || file.size === 0) {
-    return { success: false, error: "Choose a PDF or image of the vendor bill." }
+    return { success: false, error: "Choose a PDF or image of the customer invoice." }
   }
 
   if (file.size > 10 * 1024 * 1024) {
@@ -92,32 +98,32 @@ export async function extractBillFromUpload(
     return {
       success: false,
       error:
-        "OCR works with PDF, JPG, PNG, or WebP. Word files can still be attached, but details must be entered by hand.",
+        "OCR works with PDF, JPG, PNG, or WebP. Word files must be entered by hand.",
     }
   }
 
-  const { data: vendors, error: vendorsError } = await supabase
+  const { data: customers, error: customersError } = await supabase
     .from("contacts")
     .select("id, name, email, currency")
-    .eq("type", "vendor")
+    .eq("type", "customer")
     .eq("org_id", orgId)
 
-  if (vendorsError) {
-    return { success: false, error: vendorsError.message }
+  if (customersError) {
+    return { success: false, error: customersError.message }
   }
 
-  const knownVendors = vendors ?? []
+  const knownCustomers = customers ?? []
   const bytes = new Uint8Array(await file.arrayBuffer())
 
   let text = ""
   try {
     text = await readBillText(bytes, mediaType)
   } catch (error) {
-    console.error("bill OCR failed", error)
+    console.error("invoice OCR failed", error)
     return {
       success: false,
       error:
-        "OCR could not read this bill. Use a clear PDF or photo, then fill any missing fields.",
+        "OCR could not read this invoice. Use a clear PDF or photo, then fill any missing fields.",
     }
   }
 
@@ -131,16 +137,15 @@ export async function extractBillFromUpload(
 
   const extracted = parseInvoiceText(text, {
     fileName: file.name,
-    knownVendors,
+    knownCustomers,
   })
 
-  const vendorName = extracted.vendorName.trim()
-  const vendorEmail = extracted.vendorEmail.trim()
-  const billNumber = extracted.billNumber.trim() || null
+  const customerName = extracted.customerName.trim()
+  const customerEmail = extracted.customerEmail.trim()
+  const invoiceNumber = extracted.billNumber.trim() || null
+  const issueDate = extracted.invoiceDate
   let dueDate = extracted.dueDate
-  if (!dueDate && extracted.invoiceDate) {
-    dueDate = extracted.invoiceDate
-  }
+  if (!dueDate && issueDate) dueDate = addDaysIso(issueDate, 30)
 
   const sourceCurrency = extracted.currency || DEFAULT_CURRENCY
   const sourceTotal = roundMoney(
@@ -152,7 +157,7 @@ export async function extractBillFromUpload(
   )
   let fxNote: string | null = null
   let amountMultiplier = 1
-  let needsReview = extracted.requiresReview
+  let needsReview = false
   let fxRate: number | null = null
   let fxAsOf: string | null = null
   let inrTotal: number | null =
@@ -179,7 +184,7 @@ export async function extractBillFromUpload(
           quote.asOf === extracted.invoiceDate
             ? extracted.invoiceDate
             : `${extracted.invoiceDate}, market rate ${quote.asOf}`
-        fxNote = `Bill is ${sourceCurrency}. Converted ${formatMoney(sourceTotal, sourceCurrency)} at ${formatINR(quote.rate)} per ${sourceCurrency} (${rateDate}) → ${formatINR(inrTotal)}.`
+        fxNote = `Invoice is ${sourceCurrency}. Converted ${formatMoney(sourceTotal, sourceCurrency)} at ${formatINR(quote.rate)} per ${sourceCurrency} (${rateDate}) → ${formatINR(inrTotal)}.`
       }
     }
   }
@@ -199,17 +204,17 @@ export async function extractBillFromUpload(
             : roundMoney(item.unitPrice * amountMultiplier)
         ),
         tax_rate: String(item.taxRate),
-      } satisfies ExtractedBillItem
+      } satisfies ExtractedInvoiceItem
     })
-    .filter((item): item is ExtractedBillItem => item !== null)
+    .filter((item): item is ExtractedInvoiceItem => item !== null)
 
-  let vendorId: string | null = null
-  let newVendor: ExtractedVendor | null = null
+  let customerId: string | null = null
+  let newCustomer: ExtractedCustomer | null = null
 
-  if (vendorName) {
-    const wanted = normalizeName(vendorName)
-    const match = knownVendors.find((vendor) => {
-      const current = normalizeName(vendor.name)
+  if (customerName) {
+    const wanted = normalizeName(customerName)
+    const match = knownCustomers.find((customer) => {
+      const current = normalizeName(customer.name)
       return (
         current === wanted ||
         current.includes(wanted) ||
@@ -218,28 +223,28 @@ export async function extractBillFromUpload(
     })
 
     if (match) {
-      vendorId = match.id
+      customerId = match.id
     } else {
-      const email = vendorEmail.includes("@")
-        ? vendorEmail
-        : vendorPlaceholderEmail(vendorName)
+      const email = customerEmail.includes("@")
+        ? customerEmail
+        : customerPlaceholderEmail(customerName)
       const { data: created, error: createError } = await supabase
         .from("contacts")
         .insert({
           org_id: orgId,
-          type: "vendor",
-          name: vendorName,
+          type: "customer",
+          name: customerName,
           email,
-          phone: extracted.vendorPhone.trim() || null,
-          tax_id: extracted.vendorTaxId.trim() || null,
+          phone: extracted.customerPhone.trim() || null,
+          tax_id: extracted.customerTaxId.trim() || null,
           currency: sourceCurrency,
         })
         .select("id, name, email, currency")
         .single()
 
       if (!createError && created) {
-        vendorId = created.id
-        newVendor = {
+        customerId = created.id
+        newCustomer = {
           id: created.id,
           name: created.name,
           email: created.email,
@@ -253,33 +258,34 @@ export async function extractBillFromUpload(
           entity_id: created.id,
           changes_json: {
             after: {
-              source: "bill-ocr",
-              name: vendorName,
+              source: "invoice-ocr",
+              name: customerName,
               email,
             },
           },
         })
         revalidatePath("/dashboard/contacts")
-        revalidatePath("/dashboard/ap")
-        revalidatePath("/dashboard/ap/new")
+        revalidatePath("/dashboard/ar")
+        revalidatePath("/dashboard/ar/new")
       }
     }
   }
 
   const filled = [
-    vendorId ? "vendor" : null,
-    billNumber ? "bill number" : null,
+    customerId ? "customer" : null,
+    invoiceNumber ? "invoice number" : null,
+    issueDate ? "issue date" : null,
     dueDate ? "due date" : null,
     items.length ? "line items" : null,
   ].filter(Boolean)
 
   return {
     success: true,
-    vendorId,
-    newVendor,
-    billNumber,
+    customerId,
+    newCustomer,
+    invoiceNumber,
+    issueDate,
     dueDate,
-    invoiceDate: extracted.invoiceDate,
     sourceCurrency,
     sourceTotal: extracted.items.length ? sourceTotal : null,
     fxRate,
@@ -287,13 +293,10 @@ export async function extractBillFromUpload(
     inrTotal,
     needsReview,
     items,
-    blockSubmit: extracted.requiresReview,
-    message: extracted.requiresReview
-      ? `${extracted.reviewReason || "Invoice totals do not reconcile."} Line items were not applied. Correct the bill before submitting.`
-      : needsReview
-        ? `${fxNote ?? "Needs review."} Vendor, bill number, due date, and line items were filled from OCR. Convert to INR after review — do not submit unconverted amounts.`
-        : filled.length
-          ? `${fxNote ? `${fxNote} ` : ""}Filled ${filled.join(", ")} from OCR. Review before submitting.`
-          : "The file is attached, but OCR could not find bill details. Enter them manually.",
+    message: needsReview
+      ? `${fxNote ?? "Needs review."} Customer, invoice number, dates, and line items were filled from OCR. Convert to INR after review — do not submit unconverted amounts.`
+      : filled.length
+        ? `${fxNote ? `${fxNote} ` : ""}Filled ${filled.join(", ")} from OCR. Review before creating the invoice.`
+        : "OCR could not find invoice details. Enter them manually.",
   }
 }

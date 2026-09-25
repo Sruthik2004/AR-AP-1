@@ -53,6 +53,9 @@ type LineItemDraft = {
 type BillCreateFormProps = {
   vendors: VendorOption[]
   vendorsError?: string | null
+  initialVendorId?: string
+  initialDescription?: string
+  initialAmount?: string
 }
 
 function createEmptyLine(): LineItemDraft {
@@ -83,12 +86,17 @@ function suggestBillNumber() {
 export function BillCreateForm({
   vendors,
   vendorsError,
+  initialVendorId = "",
+  initialDescription = "",
+  initialAmount = "",
 }: BillCreateFormProps) {
   const router = useRouter()
   const [pending, setPending] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const [vendorOptions, setVendorOptions] = React.useState(vendors)
-  const [vendorId, setVendorId] = React.useState("")
+  const [vendorId, setVendorId] = React.useState(() =>
+    vendors.some((vendor) => vendor.id === initialVendorId) ? initialVendorId : ""
+  )
   const [billNumber, setBillNumber] = React.useState(suggestBillNumber)
   const [dueDate, setDueDate] = React.useState(() => addDaysInputValue(30))
   const [attachment, setAttachment] = React.useState<File | null>(null)
@@ -105,7 +113,19 @@ export function BillCreateForm({
     inrTotal: number
   } | null>(null)
   const extractGen = React.useRef(0)
-  const [lines, setLines] = React.useState<LineItemDraft[]>([createEmptyLine()])
+  const [lines, setLines] = React.useState<LineItemDraft[]>(() => {
+    const amount = Number(initialAmount)
+    if (!initialDescription) return [createEmptyLine()]
+    return [
+      {
+        key: crypto.randomUUID(),
+        description: initialDescription,
+        quantity: "1",
+        unit_price: Number.isFinite(amount) && amount > 0 ? String(amount) : "0",
+        tax_rate: "0",
+      },
+    ]
+  })
 
   React.useEffect(() => {
     setVendorOptions(vendors)
@@ -283,6 +303,12 @@ export function BillCreateForm({
         Bills totaling more than {formatINR(BILL_APPROVAL_THRESHOLD)} are sent
         for manager/admin approval automatically.
       </div>
+      {initialDescription ? (
+        <div className="rounded-lg border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
+          Started from the selected quotation. The line is the quoted amount
+          with no GST. Add tax if the vendor bill includes it.
+        </div>
+      ) : null}
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <div className="space-y-2 md:col-span-2 xl:col-span-1">

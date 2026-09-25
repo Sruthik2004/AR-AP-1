@@ -116,12 +116,17 @@ export function BillsDataTable({ data, error }: BillsDataTableProps) {
             </SelectContent>
           </Select>
         </div>
-        <Button asChild>
-          <Link href="/dashboard/ap/new">
-            <Plus />
-            New bill
-          </Link>
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" asChild>
+            <Link href="/dashboard/rfq">Request quotes</Link>
+          </Button>
+          <Button asChild>
+            <Link href="/dashboard/ap/new">
+              <Plus />
+              New bill
+            </Link>
+          </Button>
+        </div>
       </div>
 
       {error ? (

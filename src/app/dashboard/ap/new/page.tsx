@@ -10,15 +10,28 @@ export const metadata: Metadata = {
 
 export const maxDuration = 60
 
-export default async function NewBillPage() {
+export default async function NewBillPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ vendor?: string; memo?: string; amount?: string }>
+}) {
+  const params = await searchParams
   const { vendors, error } = await getVendorOptions()
+  const amount = Number(params.amount)
+  const memo = params.memo?.trim().slice(0, 160) ?? ""
 
   return (
     <PageShell
       title="Create bill"
       description="Upload a vendor bill. OCR fills vendor, due date, items, and total. Review before submitting."
     >
-      <BillCreateForm vendors={vendors} vendorsError={error} />
+      <BillCreateForm
+        vendors={vendors}
+        vendorsError={error}
+        initialVendorId={params.vendor}
+        initialDescription={memo}
+        initialAmount={Number.isFinite(amount) && amount > 0 ? String(amount) : ""}
+      />
     </PageShell>
   )
 }

@@ -6,6 +6,7 @@ import {
   Users,
   BookOpen,
   ScrollText,
+  Scale,
   type LucideIcon,
 } from "lucide-react"
 
@@ -28,6 +29,12 @@ export const mainNavItems: NavItem[] = [
     href: "/dashboard/ar",
     icon: HandCoins,
     description: "Invoices, collections, and aging",
+  },
+  {
+    title: "Request for Quotation",
+    href: "/dashboard/rfq",
+    icon: Scale,
+    description: "Compare vendor quotes before a bill",
   },
   {
     title: "Accounts Payable (AP)",

@@ -198,11 +198,7 @@ export async function extractInvoiceFromUpload(
       return {
         description,
         quantity: String(Math.max(1, Math.round(item.quantity) || 1)),
-        unit_price: String(
-          needsReview
-            ? item.unitPrice
-            : roundMoney(item.unitPrice * amountMultiplier)
-        ),
+        unit_price: String(roundMoney(item.unitPrice * amountMultiplier)),
         tax_rate: String(item.taxRate),
       } satisfies ExtractedInvoiceItem
     })

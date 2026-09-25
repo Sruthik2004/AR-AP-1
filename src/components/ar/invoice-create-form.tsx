@@ -174,7 +174,6 @@ export function InvoiceCreateForm({
 
       setNeedsReview(result.needsReview)
       if (
-        !result.needsReview &&
         result.issueDate &&
         result.fxRate &&
         result.sourceTotal != null &&
@@ -558,7 +557,10 @@ export function InvoiceCreateForm({
         <Button type="button" variant="outline" asChild disabled={busy}>
           <Link href="/dashboard/ar">Cancel</Link>
         </Button>
-        <Button type="submit" disabled={busy || customerOptions.length === 0 || !customerId}>
+        <Button
+          type="submit"
+          disabled={busy || needsReview || customerOptions.length === 0 || !customerId}
+        >
           {pending ? (
             <>
               <Loader2 className="animate-spin" />

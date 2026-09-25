@@ -152,7 +152,7 @@ export async function extractBillFromUpload(
   )
   let fxNote: string | null = null
   let amountMultiplier = 1
-  let needsReview = extracted.requiresReview
+  let needsReview = false
   let fxRate: number | null = null
   let fxAsOf: string | null = null
   let inrTotal: number | null =
@@ -193,11 +193,7 @@ export async function extractBillFromUpload(
       return {
         description,
         quantity: String(Math.max(1, Math.round(item.quantity) || 1)),
-        unit_price: String(
-          needsReview
-            ? item.unitPrice
-            : roundMoney(item.unitPrice * amountMultiplier)
-        ),
+        unit_price: String(roundMoney(item.unitPrice * amountMultiplier)),
         tax_rate: String(item.taxRate),
       } satisfies ExtractedBillItem
     })
@@ -287,13 +283,22 @@ export async function extractBillFromUpload(
     inrTotal,
     needsReview,
     items,
-    blockSubmit: extracted.requiresReview,
-    message: extracted.requiresReview
-      ? `${extracted.reviewReason || "Invoice totals do not reconcile."} Line items were not applied. Correct the bill before submitting.`
-      : needsReview
+    blockSubmit: extracted.requiresReview || needsReview,
+    message: [
+      extracted.requiresReview
+        ? `${extracted.reviewReason || "Invoice totals do not reconcile."} Line items were not applied. Correct the bill before submitting.`
+        : null,
+      needsReview
         ? `${fxNote ?? "Needs review."} Vendor, bill number, due date, and line items were filled from OCR. Convert to INR after review — do not submit unconverted amounts.`
-        : filled.length
-          ? `${fxNote ? `${fxNote} ` : ""}Filled ${filled.join(", ")} from OCR. Review before submitting.`
-          : "The file is attached, but OCR could not find bill details. Enter them manually.",
+        : null,
+      !extracted.requiresReview && !needsReview && filled.length
+        ? `${fxNote ? `${fxNote} ` : ""}Filled ${filled.join(", ")} from OCR. Review before submitting.`
+        : null,
+      !extracted.requiresReview && !needsReview && !filled.length
+        ? "The file is attached, but OCR could not find bill details. Enter them manually."
+        : null,
+    ]
+      .filter(Boolean)
+      .join(" "),
   }
 }

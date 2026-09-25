@@ -378,7 +378,7 @@ function documentGst(text: string) {
 
   if (/without payment of tax|\blut\b|export under/i.test(text)) return 0
 
-  return 18
+  return null
 }
 
 function isYear(value: number) {
@@ -695,7 +695,9 @@ export function parseInvoiceText(
     /(?:^|\n)\s*Date[:\s]+([0-9]{1,2}[\/.\-][0-9]{1,2}[\/.\-][0-9]{2,4})/i
   )
   const invoiceDate = labeledInvoiceDate ?? bareDate
-  const taxRate = documentGst(cleaned)
+  const currency = detectCurrency(cleaned)
+  const statedGst = documentGst(cleaned)
+  const taxRate = statedGst ?? (currency === "INR" ? 18 : 0)
 
   let dueDate = findLabeledDate(
     cleaned,
@@ -749,8 +751,9 @@ export function parseInvoiceText(
   if (reasons.length) items = []
 
   let confidence = items.length ? 92 : 50
-  if (items.length && reasons.length === 0 && summary.grand != null) confidence = 98
-  else if (items.length && summary.grand == null) confidence = 90
+  if (items.length && reasons.length === 0) {
+    confidence = summary.grand != null || summary.subtotal != null ? 98 : 96
+  }
   if (!invoiceDate) confidence = Math.min(confidence, 80)
   const requiresReview = reasons.length > 0 || confidence < 95
 
@@ -771,7 +774,7 @@ export function parseInvoiceText(
     invoiceDate,
     invoiceDateVerified: Boolean(invoiceDate),
     dueDate,
-    currency: detectCurrency(cleaned),
+    currency,
     subtotal: summary.subtotal ?? (items.length ? lineSubtotal : null),
     totalGst: summary.totalGst ?? (items.length ? lineGst : null),
     grandTotal: summary.grand ?? (items.length ? lineGrand : null),

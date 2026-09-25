@@ -177,7 +177,6 @@ export function BillCreateForm({
       setNeedsReview(result.needsReview)
       setBlockSubmit(result.blockSubmit)
       if (
-        !result.needsReview &&
         result.invoiceDate &&
         result.fxRate &&
         result.sourceTotal != null &&
